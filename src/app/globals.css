@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f7f6f2;
+  --panel: #ffffff;
+  --line: #e5e3dc;
+  --text: #0a0a0a;
+  --muted: #575751;
+  --accent: #1f9e4b;
+  --accent-2: #39ff14;
+  --cut: #00bfef;
+  --wave: #2d8f45;
+  --background: var(--bg);
+  --foreground: var(--text);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-noto), "Noto Sans TC", sans-serif;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.btn {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn.primary {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #0a0a0a;
+  font-weight: 700;
+}
+
+.btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.field {
+  border: 1px solid var(--line);
+  background: #efece4;
+  color: var(--text);
+  border-radius: 0.4rem;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.field:focus {
+  outline: 1px solid var(--accent);
+}
+
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 0.45rem 0.9rem;
+  text-align: left;
+  color: var(--text);
+}
+
+.menu-item:hover {
+  background: #f3f1ea;
+}
