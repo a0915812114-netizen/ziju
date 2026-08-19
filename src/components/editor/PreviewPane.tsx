@@ -44,6 +44,11 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
   const frame = SAFE_FRAME[orientation];
   const fontPx = Math.max(16, (style.fontSize / 100) * (stageW || 360));
   const draftOrigin = useRef("");
+  const born = shown ? Math.max(0, overlayMs - shown.startMs) : 0;
+  const motionT = Math.min(1, born / 180);
+  const overlayScale =
+    style.animation === "zoom" ? 0.86 + 0.14 * motionT : style.animation === "pop" ? 1.12 - 0.12 * motionT : 1;
+  const overlayAlpha = style.animation === "fade" ? motionT : 1;
 
   useEffect(() => {
     if (mediaRef.current) mediaRef.current.playbackRate = playbackRate;
@@ -114,7 +119,7 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
     };
   }
 
-  function onPointerMove(event: PointerEvent<HTMLDivElement>) {
+  function onPointerMove(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     const stage = stageRef.current;
     if (!drag || !stage) return;
@@ -162,7 +167,8 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
   const overlayStyle = {
     left: `${style.x}%`,
     top: `${style.y}%`,
-    transform: "translate(-50%, -50%)",
+    transform: `translate(-50%, -50%) scale(${overlayScale})`,
+    opacity: overlayAlpha,
     fontFamily: style.fontFamily,
     fontSize: `${fontPx}px`,
     color: style.color,
@@ -266,6 +272,33 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
                     }}
                   />
                 )}
+                {style.bilingual && (shown.translation || !playing) ? (
+                  playing ? (
+                    <p
+                      className="mt-1 text-center"
+                      style={{ fontSize: `${Math.max(12, fontPx * 0.62)}px`, opacity: 0.92 }}
+                    >
+                      {shown.translation}
+                    </p>
+                  ) : (
+                    <textarea
+                      value={shown.translation ?? ""}
+                      rows={1}
+                      placeholder="譯文"
+                      className="mt-1 w-full resize-none bg-black/20 text-center outline-none"
+                      style={{
+                        fontFamily: style.fontFamily,
+                        fontSize: `${Math.max(12, fontPx * 0.62)}px`,
+                        color: style.color,
+                      }}
+                      onChange={(event) =>
+                        useEditorStore
+                          .getState()
+                          .updateCueTranslation(shown.id, event.currentTarget.value, false)
+                      }
+                    />
+                  )
+                ) : null}
                 <button
                   type="button"
                   aria-label="拖動字幕位置"

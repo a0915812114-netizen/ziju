@@ -1,6 +1,7 @@
 export type Orientation = "horizontal" | "vertical";
 export type LayoutMode = "auto" | "horizontal" | "vertical" | "custom";
-export type AsrLanguage = "auto" | "zh" | "en";
+export type AsrLanguage = string;
+export type StyleAnimation = "none" | "fade" | "zoom" | "pop";
 
 export type SubtitleStyle = {
   fontFamily: string;
@@ -11,6 +12,8 @@ export type SubtitleStyle = {
   x: number;
   y: number;
   karaoke: boolean;
+  animation: StyleAnimation;
+  bilingual: boolean;
 };
 
 export const FONTS = [
@@ -36,6 +39,8 @@ export function defaultStyle(orientation: Orientation = "horizontal"): SubtitleS
     x: 50,
     y: 100 - frame.b - 3,
     karaoke: true,
+    animation: "none",
+    bilingual: false,
   };
 }
 

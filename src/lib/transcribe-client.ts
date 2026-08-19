@@ -2,6 +2,7 @@
 
 import { extractAudio, splitAudioIfNeeded } from "./extract-audio";
 import { sortCues, splitForReading } from "./cues";
+import { isChineseLang } from "./languages";
 import type { AsrLanguage } from "./style";
 import type { Cue } from "./types";
 
@@ -69,11 +70,15 @@ export async function transcribeMedia(
       .map((cue) => cue.text)
       .join("");
   }
-  opts.onTranscribe?.(0.92, "工讀生在對稿");
   const merged = splitForReading(stitchCues(all));
   if (merged.length === 0) {
     throw new TranscribeError("EMPTY", "沒聽出字幕。請確認片子有人聲，語言改成繁體中文再試一次。");
   }
+  if (!isChineseLang(opts.language)) {
+    opts.onTranscribe?.(1, "聽打完成");
+    return merged;
+  }
+  opts.onTranscribe?.(0.92, "工讀生在對稿");
   const polished = await polishCueTexts(merged, opts.glossary, opts.signal);
   opts.onTranscribe?.(1, "聽打完成");
   return polished;

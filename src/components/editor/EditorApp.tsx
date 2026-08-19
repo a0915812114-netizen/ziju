@@ -3,6 +3,7 @@
 import { MAX_MEDIA_MS } from "@/lib/extract-audio";
 import { transcribeMedia, TranscribeError } from "@/lib/transcribe-client";
 import { readDuration } from "@/lib/media-duration";
+import { takePendingStyle } from "@/lib/heroes";
 import { takePendingUpload } from "@/lib/pending-upload";
 import { getProject, saveProject } from "@/lib/projects";
 import type { AsrStatus, SeekOpts } from "@/lib/types";
@@ -48,6 +49,10 @@ export function EditorApp({ projectId }: { projectId: string }) {
       return;
     }
     loadProject(project);
+    const pendingStyle = takePendingStyle();
+    if (pendingStyle) {
+      useEditorStore.getState().applyStyle(pendingStyle.style, pendingStyle.orientation);
+    }
     const pending = takePendingUpload(projectId);
     if (pending) window.setTimeout(() => void attachMedia(pending), 0);
   }, [projectId, loadProject, router]);

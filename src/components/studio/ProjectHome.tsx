@@ -5,7 +5,9 @@ import {
   deleteProject,
   fromNow,
   listProjects,
+  parseProjectFile,
   projectStats,
+  saveProject,
   type ProjectRecord,
 } from "@/lib/projects";
 import { clearPendingUpload } from "@/lib/pending-upload";
@@ -14,7 +16,7 @@ import type { AsrStatus } from "@/lib/types";
 import { useEditorStore } from "@/store/editor-store";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function ProjectHome() {
   const router = useRouter();
@@ -26,6 +28,7 @@ export function ProjectHome() {
   const [view, setView] = useState<"grid" | "list">("grid");
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [subbyOpen, setSubbyOpen] = useState(false);
+  const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const refresh = () => setProjects(listProjects());
@@ -89,6 +92,27 @@ export function ProjectHome() {
         <button type="button" className="btn primary" onClick={newProject}>
           + 新專案
         </button>
+        <button type="button" className="btn" onClick={() => importRef.current?.click()}>
+          匯入專案
+        </button>
+        <input
+          ref={importRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={async (event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            try {
+              const project = parseProjectFile(await file.text());
+              saveProject(project);
+              setToast(`已匯入「${project.name}」`);
+            } catch {
+              setToast("專案檔讀不到");
+            }
+          }}
+        />
         <Link href="/studio/clips" className="text-sm text-[var(--muted)] hover:text-[var(--text)]">
           我的剪輯與字幕
         </Link>

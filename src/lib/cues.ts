@@ -97,11 +97,15 @@ function splitOverlapping(
 
 export function mergeCues(left: Cue, right: Cue): Cue {
   const joiner = needsSpace(left.text, right.text) ? " " : "";
+  const leftT = left.translation?.trim() ?? "";
+  const rightT = right.translation?.trim() ?? "";
+  const tJoin = needsSpace(leftT, rightT) ? " " : "";
   return {
     id: left.id,
     startMs: left.startMs,
     endMs: right.endMs,
     text: `${left.text}${joiner}${right.text}`,
+    translation: leftT || rightT ? `${leftT}${tJoin}${rightT}`.trim() : undefined,
     words: [...left.words, ...right.words],
   };
 }
@@ -200,23 +204,25 @@ export function cueAtTime(cues: Cue[], timeMs: number): Cue | undefined {
   return timeMs <= last.endMs + 400 ? last : undefined;
 }
 
-export function toSrt(cues: Cue[]) {
+export function toSrt(cues: Cue[], bilingual = false) {
   return cues
     .filter((cue) => cue.text.trim())
-    .map(
-      (cue, index) =>
-        `${index + 1}\n${formatSrtTime(cue.startMs)} --> ${formatSrtTime(cue.endMs)}\n${cue.text.trim()}\n`,
-    )
+    .map((cue, index) => {
+      const lines = [cue.text.trim()];
+      if (bilingual && cue.translation?.trim()) lines.push(cue.translation.trim());
+      return `${index + 1}\n${formatSrtTime(cue.startMs)} --> ${formatSrtTime(cue.endMs)}\n${lines.join("\n")}\n`;
+    })
     .join("\n");
 }
 
-export function toVtt(cues: Cue[]) {
+export function toVtt(cues: Cue[], bilingual = false) {
   const body = cues
     .filter((cue) => cue.text.trim())
-    .map(
-      (cue) =>
-        `${formatVttTime(cue.startMs)} --> ${formatVttTime(cue.endMs)}\n${cue.text.trim()}`,
-    )
+    .map((cue) => {
+      const lines = [cue.text.trim()];
+      if (bilingual && cue.translation?.trim()) lines.push(cue.translation.trim());
+      return `${formatVttTime(cue.startMs)} --> ${formatVttTime(cue.endMs)}\n${lines.join("\n")}`;
+    })
     .join("\n\n");
   return `WEBVTT\n\n${body}\n`;
 }

@@ -1,15 +1,27 @@
 "use client";
 
-import { FONTS } from "@/lib/style";
+import { publishHero } from "@/lib/heroes";
+import { FONTS, type StyleAnimation } from "@/lib/style";
+import { STYLE_PRESETS } from "@/lib/style-presets";
 import { useEditorStore } from "@/store/editor-store";
 
+const MOTIONS: { id: StyleAnimation; label: string }[] = [
+  { id: "none", label: "無動畫" },
+  { id: "fade", label: "淡入" },
+  { id: "zoom", label: "縮放" },
+  { id: "pop", label: "彈入" },
+];
+
 export function StyleBar() {
+  const name = useEditorStore((s) => s.name);
   const orientation = useEditorStore((s) => s.orientation);
   const showSafeFrame = useEditorStore((s) => s.showSafeFrame);
   const style = useEditorStore((s) => s.style);
   const setOrientation = useEditorStore((s) => s.setOrientation);
   const setShowSafeFrame = useEditorStore((s) => s.setShowSafeFrame);
   const patchStyle = useEditorStore((s) => s.patchStyle);
+  const applyStyle = useEditorStore((s) => s.applyStyle);
+  const setToast = useEditorStore((s) => s.setToast);
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] bg-[var(--panel)] px-3 py-2 text-xs">
@@ -41,6 +53,41 @@ export function StyleBar() {
       >
         動態字幕
       </button>
+      <button
+        type="button"
+        className={`btn ${style.bilingual ? "border-[var(--accent)] text-[var(--accent)]" : ""}`}
+        onClick={() => patchStyle({ bilingual: !style.bilingual })}
+      >
+        雙語
+      </button>
+      <select
+        className="field"
+        value=""
+        onChange={(event) => {
+          const preset = STYLE_PRESETS.find((item) => item.id === event.target.value);
+          if (!preset) return;
+          applyStyle(preset.style, preset.orientation);
+          setToast(`已套用「${preset.name}」`);
+        }}
+      >
+        <option value="">樣式預設</option>
+        {STYLE_PRESETS.map((preset) => (
+          <option key={preset.id} value={preset.id}>
+            {preset.name}
+          </option>
+        ))}
+      </select>
+      <select
+        className="field"
+        value={style.animation}
+        onChange={(event) => patchStyle({ animation: event.target.value as StyleAnimation })}
+      >
+        {MOTIONS.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.label}
+          </option>
+        ))}
+      </select>
       <select
         className="field"
         value={style.fontFamily}
@@ -68,7 +115,23 @@ export function StyleBar() {
           onChange={(event) => patchStyle({ strokeColor: event.target.value })}
         />
       </label>
-      <span className="text-[var(--muted)]">拖字幕對位置，拉右下角改字級</span>
+      <button
+        type="button"
+        className="btn"
+        onClick={() => {
+          publishHero({
+            id: `mine-${Date.now()}`,
+            name: `${name || "未命名"} 樣式`,
+            author: "我",
+            orientation,
+            style,
+          });
+          setToast("已發到本機英雄榜");
+        }}
+      >
+        發到英雄榜
+      </button>
+      <span className="text-[var(--muted)]">拖左側握把對位置，拉右下角改字級</span>
     </div>
   );
 }

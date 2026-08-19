@@ -15,6 +15,7 @@ type Props = {
 
 export function Toolbar({ onPickFile, mediaRef }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const projectRef = useRef<HTMLInputElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [open, setOpen] = useState(false);
@@ -80,7 +81,7 @@ export function Toolbar({ onPickFile, mediaRef }: Props) {
       const suffix = mode === "subs" ? "-黑底字幕" : "-字幕";
       downloadBlob(blob, `${name}${suffix}.${ext}`);
       setJob({ phase: "ready", progress: 1, message: "" });
-      setToast(ext === "webm" ? "已匯出 WebM，剪輯軟體可直接匯入" : "已匯出成品影片");
+      setToast(ext === "mp4" ? "已匯出 MP4" : "已匯出 WebM，剪輯軟體可直接匯入");
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         setJob({ phase: "ready", progress: 0, message: "" });
@@ -116,9 +117,16 @@ export function Toolbar({ onPickFile, mediaRef }: Props) {
                 <button
                   type="button"
                   className="menu-item"
-                  onClick={() => saveText(`${name}.srt`, exportSrt(), "application/x-subrip")}
+                  onClick={() => saveText(`${name}.srt`, exportSrt(false), "application/x-subrip")}
                 >
                   SRT 字幕
+                </button>
+                <button
+                  type="button"
+                  className="menu-item"
+                  onClick={() => saveText(`${name}-雙語.srt`, exportSrt(true), "application/x-subrip")}
+                >
+                  雙語 SRT
                 </button>
                 <button
                   type="button"
@@ -130,11 +138,47 @@ export function Toolbar({ onPickFile, mediaRef }: Props) {
                 <button
                   type="button"
                   className="menu-item"
+                  onClick={() => saveText(`${name}-雙語.vtt`, toVtt(cues, true), "text/vtt")}
+                >
+                  雙語 VTT
+                </button>
+                <button
+                  type="button"
+                  className="menu-item"
                   onClick={() =>
                     saveText(`${name}.txt`, exportTranscript(), "text/plain;charset=utf-8")
                   }
                 >
                   逐字稿
+                </button>
+                <button
+                  type="button"
+                  className="menu-item"
+                  onClick={() => {
+                    const snap = useEditorStore.getState().snapshotProject();
+                    if (!snap) {
+                      setToast("還沒有專案可匯出");
+                      return;
+                    }
+                    downloadText(
+                      `${name}.ziju.json`,
+                      JSON.stringify(snap, null, 2),
+                      "application/json",
+                    );
+                    setOpen(false);
+                  }}
+                >
+                  專案檔 JSON
+                </button>
+                <button
+                  type="button"
+                  className="menu-item"
+                  onClick={() => {
+                    setOpen(false);
+                    projectRef.current?.click();
+                  }}
+                >
+                  匯入專案檔
                 </button>
                 <div className="my-1 h-px bg-[var(--line)]" />
                 <button type="button" className="menu-item" onClick={() => void burn("burn")}>
@@ -190,6 +234,18 @@ export function Toolbar({ onPickFile, mediaRef }: Props) {
             const file = event.target.files?.[0];
             if (file) onPickFile(file);
             event.target.value = "";
+          }}
+        />
+        <input
+          ref={projectRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={async (event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (!file) return;
+            useEditorStore.getState().importProjectJson(await file.text());
           }}
         />
       </div>

@@ -16,8 +16,9 @@ import {
 } from "@/lib/cues";
 import { DEMO_CUT_POINTS } from "@/lib/cuts";
 import { DEMO_CUES, DEMO_MEDIA_LABEL } from "@/lib/demo-project";
-import { getProject, type ProjectRecord } from "@/lib/projects";
+import { getProject, parseProjectFile, type ProjectRecord } from "@/lib/projects";
 import { clamp } from "@/lib/snap";
+import { translateLines } from "@/lib/translate-client";
 import {
   defaultStyle,
   type AsrLanguage,
@@ -82,6 +83,10 @@ type EditorState = {
   setPlaying: (playing: boolean) => void;
   selectCue: (id: string | null) => void;
   updateCueText: (id: string, text: string, record?: boolean) => void;
+  updateCueTranslation: (id: string, translation: string, record?: boolean) => void;
+  translateCues: (to: string) => Promise<number>;
+  applyStyle: (style: SubtitleStyle, orientation?: Orientation) => void;
+  importProjectJson: (raw: string) => boolean;
   setCueTiming: (id: string, startMs: number, endMs: number) => void;
   addCueAt: (startMs: number, endMs: number) => string;
   removeCue: (id: string) => void;
@@ -117,7 +122,7 @@ type EditorState = {
   setReplace: (text: string) => void;
   setToast: (text: string | null) => void;
   setAltMode: (on: boolean) => void;
-  exportSrt: () => string;
+  exportSrt: (bilingual?: boolean) => string;
   exportTranscript: () => string;
   cueAtPlayhead: () => Cue | null;
 };
@@ -163,7 +168,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   style: defaultStyle("horizontal"),
   playbackRate: 1,
   volume: 1,
-  showStyle: false,
+  showStyle: true,
   showShortcuts: false,
   past: [],
   future: [],
@@ -259,6 +264,55 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((state) => ({
       cues: state.cues.map((cue) => (cue.id === id ? { ...cue, text } : cue)),
     }));
+  },
+  updateCueTranslation: (id, translation, record = true) => {
+    if (record) get().recordHistory();
+    set((state) => ({
+      cues: state.cues.map((cue) => (cue.id === id ? { ...cue, translation } : cue)),
+    }));
+  },
+  translateCues: async (to) => {
+    const cues = get().cues;
+    if (cues.length === 0) {
+      get().setToast("還沒有字幕可翻譯");
+      return 0;
+    }
+    try {
+      const lines = await translateLines(
+        cues.map((cue) => cue.text),
+        to,
+      );
+      get().recordHistory();
+      set((state) => ({
+        cues: state.cues.map((cue, index) => ({
+          ...cue,
+          translation: lines[index] || cue.translation,
+        })),
+        style: { ...state.style, bilingual: true },
+      }));
+      get().setToast(`已翻成譯文 ${lines.filter(Boolean).length} 句`);
+      return lines.length;
+    } catch {
+      get().setToast("翻譯失敗，請稍後再試");
+      return 0;
+    }
+  },
+  applyStyle: (style, orientation) =>
+    set((state) => ({
+      style: { ...state.style, ...style },
+      orientation: orientation ?? state.orientation,
+    })),
+  importProjectJson: (raw) => {
+    try {
+      const currentId = get().projectId ?? undefined;
+      const project = parseProjectFile(raw, currentId);
+      get().loadProject(project);
+      get().setToast(`已匯入「${project.name}」`);
+      return true;
+    } catch {
+      get().setToast("專案檔讀不到");
+      return false;
+    }
   },
   setCueTiming: (id, startMs, endMs) => {
     const duration = get().durationMs;
@@ -509,7 +563,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setReplace: (replaceText) => set({ replaceText }),
   setToast: (toast) => set({ toast }),
   setAltMode: (altMode) => set({ altMode }),
-  exportSrt: () => toSrt(get().cues),
+  exportSrt: (bilingual) => toSrt(get().cues, bilingual ?? get().style.bilingual),
   exportTranscript: () => toTranscript(get().cues),
   cueAtPlayhead: () => {
     const { cues, currentTimeMs } = get();

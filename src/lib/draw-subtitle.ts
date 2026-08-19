@@ -28,7 +28,13 @@ export function drawSubtitleFrame(
   const cue = cueAtTime(cues, timeMs);
   if (!cue?.text) return;
 
+  const born = Math.max(0, timeMs - cue.startMs);
+  const motion = motionFor(style.animation ?? "none", born);
   const fontPx = Math.max(16, (style.fontSize / 100) * width);
+  ctx.save();
+  ctx.translate((style.x / 100) * width, (style.y / 100) * height);
+  ctx.scale(motion.scale, motion.scale);
+  ctx.globalAlpha *= motion.alpha;
   ctx.font = `600 ${fontPx}px ${canvasFontFamily(style.fontFamily)}`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -38,26 +44,39 @@ export function drawSubtitleFrame(
   ctx.strokeStyle = style.strokeColor;
   ctx.fillStyle = style.color;
 
-  const x = (style.x / 100) * width;
-  const y = (style.y / 100) * height;
   const maxWidth = width * 0.86;
   const glyphs = toGlyphs(cue, timeMs, Boolean(style.karaoke && cue.words.length));
   const lines = wrapGlyphs(ctx, glyphs, maxWidth);
-  let offsetY = y - ((lines.length - 1) * fontPx * 1.2) / 2;
+  const extra = style.bilingual && cue.translation?.trim() ? 1 : 0;
+  let offsetY = -((lines.length - 1 + extra) * fontPx * 1.2) / 2;
 
   for (const line of lines) {
     const lineWidth = line.reduce((sum, glyph) => sum + ctx.measureText(glyph.ch).width, 0);
-    let cursor = x - lineWidth / 2;
+    let cursor = -lineWidth / 2;
     for (const glyph of line) {
       const w = ctx.measureText(glyph.ch).width;
-      ctx.globalAlpha = glyph.lit ? 1 : 0.38;
+      ctx.globalAlpha = motion.alpha * (glyph.lit ? 1 : 0.38);
       ctx.strokeText(glyph.ch, cursor + w / 2, offsetY);
       ctx.fillText(glyph.ch, cursor + w / 2, offsetY);
       cursor += w;
     }
     offsetY += fontPx * 1.2;
   }
-  ctx.globalAlpha = 1;
+  if (style.bilingual && cue.translation?.trim()) {
+    ctx.globalAlpha = motion.alpha * 0.92;
+    ctx.font = `500 ${Math.max(12, fontPx * 0.62)}px ${canvasFontFamily(style.fontFamily)}`;
+    ctx.strokeText(cue.translation.trim(), 0, offsetY);
+    ctx.fillText(cue.translation.trim(), 0, offsetY);
+  }
+  ctx.restore();
+}
+
+function motionFor(animation: SubtitleStyle["animation"], bornMs: number) {
+  const t = Math.min(1, bornMs / 180);
+  if (animation === "fade") return { alpha: t, scale: 1 };
+  if (animation === "zoom") return { alpha: 1, scale: 0.86 + 0.14 * t };
+  if (animation === "pop") return { alpha: 1, scale: 1.12 - 0.12 * t };
+  return { alpha: 1, scale: 1 };
 }
 
 function toGlyphs(cue: Cue, timeMs: number, karaoke: boolean): Glyph[] {

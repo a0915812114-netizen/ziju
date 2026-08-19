@@ -109,13 +109,33 @@ function readAll(): ProjectRecord[] {
   }
 }
 
+export function parseProjectFile(raw: string, keepId?: string): ProjectRecord {
+  const item = JSON.parse(raw) as Partial<ProjectRecord>;
+  return normalize({ ...item, id: keepId ?? newId() });
+}
+
+function normalizeStyle(style: Partial<SubtitleStyle> | undefined, orientation: Orientation): SubtitleStyle {
+  const base = defaultStyle(orientation);
+  if (!style) return base;
+  const animation =
+    style.animation === "fade" || style.animation === "zoom" || style.animation === "pop"
+      ? style.animation
+      : "none";
+  return {
+    ...base,
+    ...style,
+    animation,
+    bilingual: Boolean(style.bilingual),
+  };
+}
+
 function normalize(item: Partial<ProjectRecord>): ProjectRecord {
   const orientation = item.orientation === "vertical" ? "vertical" : "horizontal";
   return {
     id: item.id ?? newId(),
     name: item.name ?? "未命名專案",
     cues: item.cues ?? [],
-    style: item.style ?? defaultStyle(orientation),
+    style: normalizeStyle(item.style, orientation),
     orientation,
     layoutMode: item.layoutMode ?? "auto",
     language: item.language ?? "auto",

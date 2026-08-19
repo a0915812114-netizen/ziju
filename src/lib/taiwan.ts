@@ -29,6 +29,8 @@ const TAIWAN_TERMS: Array<[string, string]> = [
   ["登陸", "登入"],
   ["阿中", "阿公"],
   ["阿忠", "阿公"],
+  ["阿妈", "阿嬤"],
+  ["阿媽", "阿嬤"],
 ];
 
 export function toTaiwanTraditional(text: string) {

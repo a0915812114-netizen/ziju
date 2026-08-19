@@ -9,6 +9,7 @@ export type Cue = {
   startMs: number;
   endMs: number;
   text: string;
+  translation?: string;
   words: Word[];
 };
 

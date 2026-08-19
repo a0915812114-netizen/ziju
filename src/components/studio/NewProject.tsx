@@ -1,6 +1,7 @@
 "use client";
 
 import { PUBLIC_DAILY } from "@/lib/access";
+import { ASR_LANGUAGES } from "@/lib/languages";
 import { readDuration } from "@/lib/media-duration";
 import { createProject, saveProject } from "@/lib/projects";
 import type { AsrLanguage, LayoutMode } from "@/lib/style";
@@ -280,9 +281,11 @@ function SettingsBar({
             value={language}
             onChange={(event) => onLanguage(event.target.value as AsrLanguage)}
           >
-            <option value="auto">自動偵測</option>
-            <option value="zh">繁體中文</option>
-            <option value="en">英語</option>
+            {ASR_LANGUAGES.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
           </select>
         </label>
         <div className="flex items-center gap-2">

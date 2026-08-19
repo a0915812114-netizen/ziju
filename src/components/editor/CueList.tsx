@@ -1,6 +1,7 @@
 "use client";
 
 import { charCount, charsPerSecond, cueAtTime, cueHasFind } from "@/lib/cues";
+import { TRANSLATE_TARGETS } from "@/lib/languages";
 import { formatListTime, formatPlayerTime } from "@/lib/time";
 import type { SeekOpts } from "@/lib/types";
 import { useEditorStore } from "@/store/editor-store";
@@ -34,7 +35,13 @@ export function CueList({ onSeek }: Props) {
   const setToast = useEditorStore((s) => s.setToast);
   const removeCue = useEditorStore((s) => s.removeCue);
   const importSrt = useEditorStore((s) => s.importSrt);
+  const translateCues = useEditorStore((s) => s.translateCues);
+  const updateCueTranslation = useEditorStore((s) => s.updateCueTranslation);
+  const bilingual = useEditorStore((s) => s.style.bilingual);
+  const patchStyle = useEditorStore((s) => s.patchStyle);
   const [tab, setTab] = useState<Tab>("cues");
+  const [toLang, setToLang] = useState("en");
+  const [translating, setTranslating] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const srtRef = useRef<HTMLInputElement>(null);
   const editOrigin = useRef("");
@@ -183,6 +190,37 @@ export function CueList({ onSeek }: Props) {
                 全部
               </button>
             </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <select
+                className="field min-w-0 flex-1 rounded-full"
+                value={toLang}
+                onChange={(event) => setToLang(event.target.value)}
+              >
+                {TRANSLATE_TARGETS.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    譯成{item.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn primary shrink-0 px-2 py-1 text-xs"
+                disabled={translating || cues.length === 0}
+                onClick={() => {
+                  setTranslating(true);
+                  void translateCues(toLang).finally(() => setTranslating(false));
+                }}
+              >
+                {translating ? "翻譯中…" : "翻譯全部"}
+              </button>
+              <button
+                type="button"
+                className={`btn shrink-0 px-2 py-1 text-xs ${bilingual ? "border-[var(--accent)] text-[var(--accent)]" : ""}`}
+                onClick={() => patchStyle({ bilingual: !bilingual })}
+              >
+                顯示雙語
+              </button>
+            </div>
           </div>
           {glossary.length > 0 ? (
             <div className="flex flex-wrap gap-1 border-b border-[var(--line)] px-3 py-1.5">
@@ -246,65 +284,79 @@ export function CueList({ onSeek }: Props) {
                         }}
                       />
                     ) : (
-                      <textarea
-                        value={cue.text}
-                        rows={Math.max(1, Math.ceil((cue.text.length || 8) / 18))}
-                        spellCheck
-                        className="w-full resize-none bg-transparent py-0.5 leading-6 outline-none"
-                        placeholder="輸入字幕"
-                        onFocus={() => {
-                          editOrigin.current = cue.text;
-                          openText(cue.id, cue.startMs);
-                        }}
-                        onChange={(event) => {
-                          const next = event.currentTarget.value;
-                          if (cue.text === editOrigin.current && next !== editOrigin.current) {
-                            recordHistory();
-                          }
-                          updateCueText(cue.id, next, false);
-                        }}
-                        onBlur={(event) => {
-                          const added = guessNewTerm(editOrigin.current, event.currentTarget.value);
-                          if (added) addGlossary(added);
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter" && !event.shiftKey) {
-                            event.preventDefault();
-                            if (event.ctrlKey || event.metaKey) {
-                              const indexAt =
-                                event.currentTarget.selectionStart ??
-                                event.currentTarget.value.length;
-                              updateCueText(cue.id, event.currentTarget.value, false);
-                              selectCue(cue.id);
-                              splitSelected(indexAt);
-                              return;
+                      <div>
+                        <textarea
+                          value={cue.text}
+                          rows={Math.max(1, Math.ceil((cue.text.length || 8) / 18))}
+                          spellCheck
+                          className="w-full resize-none bg-transparent py-0.5 leading-6 outline-none"
+                          placeholder="輸入字幕"
+                          onFocus={() => {
+                            editOrigin.current = cue.text;
+                            selectCue(cue.id);
+                          }}
+                          onChange={(event) => {
+                            const next = event.currentTarget.value;
+                            if (cue.text === editOrigin.current && next !== editOrigin.current) {
+                              recordHistory();
                             }
-                            event.currentTarget.blur();
-                          }
-                          if (
-                            event.key === "Backspace" &&
-                            (event.currentTarget.selectionStart ?? 0) === 0 &&
-                            (event.currentTarget.selectionEnd ?? 0) === 0
-                          ) {
-                            event.preventDefault();
-                            mergeWithPrevious(cue.id);
-                          }
-                          if (event.key === "Tab") {
-                            event.preventDefault();
-                            const dir = event.shiftKey ? -1 : 1;
-                            const next = visible[index + dir];
-                            if (next) {
-                              openText(next.id, next.startMs);
-                              window.requestAnimationFrame(() => {
-                                const node = listRef.current?.querySelector(
-                                  `[data-cue="${next.id}"] textarea`,
-                                );
-                                if (node instanceof HTMLTextAreaElement) node.focus();
-                              });
+                            updateCueText(cue.id, next, false);
+                          }}
+                          onBlur={(event) => {
+                            const added = guessNewTerm(editOrigin.current, event.currentTarget.value);
+                            if (added) addGlossary(added);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" && !event.shiftKey) {
+                              event.preventDefault();
+                              if (event.ctrlKey || event.metaKey) {
+                                const indexAt =
+                                  event.currentTarget.selectionStart ??
+                                  event.currentTarget.value.length;
+                                updateCueText(cue.id, event.currentTarget.value, false);
+                                selectCue(cue.id);
+                                splitSelected(indexAt);
+                                return;
+                              }
+                              event.currentTarget.blur();
                             }
-                          }
-                        }}
-                      />
+                            if (
+                              event.key === "Backspace" &&
+                              (event.currentTarget.selectionStart ?? 0) === 0 &&
+                              (event.currentTarget.selectionEnd ?? 0) === 0
+                            ) {
+                              event.preventDefault();
+                              mergeWithPrevious(cue.id);
+                            }
+                            if (event.key === "Tab") {
+                              event.preventDefault();
+                              const dir = event.shiftKey ? -1 : 1;
+                              const next = visible[index + dir];
+                              if (next) {
+                                openText(next.id, next.startMs);
+                                window.requestAnimationFrame(() => {
+                                  const node = listRef.current?.querySelector(
+                                    `[data-cue="${next.id}"] textarea`,
+                                  );
+                                  if (node instanceof HTMLTextAreaElement) node.focus();
+                                });
+                              }
+                            }
+                          }}
+                        />
+                        {bilingual ? (
+                          <textarea
+                            value={cue.translation ?? ""}
+                            rows={1}
+                            placeholder="譯文"
+                            className="mt-1 w-full resize-none bg-transparent py-0.5 text-sm leading-5 text-[var(--muted)] outline-none"
+                            onFocus={() => selectCue(cue.id)}
+                            onChange={(event) =>
+                              updateCueTranslation(cue.id, event.currentTarget.value, false)
+                            }
+                          />
+                        ) : null}
+                      </div>
                     )}
                     <div className="flex items-start justify-end gap-2 pt-1 font-mono text-[11px] text-[var(--muted)]">
                       <span>{charCount(cue.text)}</span>

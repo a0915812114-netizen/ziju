@@ -5,6 +5,7 @@ import {
   MAX_TRANSCRIBE_BYTES,
   publicQuota,
 } from "@/lib/access";
+import { isChineseLang, whisperLanguage } from "@/lib/languages";
 import { cleanCueText } from "@/lib/clean-cue";
 import { newId, splitForReading } from "@/lib/cues";
 import { secondsToMs } from "@/lib/time";
@@ -66,7 +67,8 @@ export async function POST(request: Request) {
   const audio = form.get("audio");
   const glossaryRaw = String(form.get("glossary") ?? "");
   const languageRaw = String(form.get("language") ?? "auto");
-  const language = languageRaw === "en" ? "en" : "zh";
+  const language = whisperLanguage(languageRaw);
+  const chinese = isChineseLang(languageRaw);
   const durationMs = Math.max(0, Number(form.get("durationMs") ?? 0));
   if (!(audio instanceof File)) {
     return Response.json({ error: "請上傳音訊" }, { status: 400 });
@@ -111,7 +113,7 @@ export async function POST(request: Request) {
     .split("\n")
     .map((item) => item.trim())
     .filter(Boolean);
-  const prompt = whisperPrompt(language, glossary, prefix);
+  const prompt = whisperPrompt(languageRaw, glossary, prefix);
 
   try {
     const transcribed = groqKey
@@ -146,10 +148,10 @@ export async function POST(request: Request) {
     const cues = splitForReading(rawCues)
       .map((cue) => ({
         ...cue,
-        text: language === "en" ? cue.text.trim() : cleanCueText(cue.text),
+        text: chinese ? cleanCueText(cue.text) : cue.text.trim(),
         words: cue.words.map((word) => ({
           ...word,
-          text: language === "en" ? word.text : cleanCueText(word.text) || word.text,
+          text: chinese ? cleanCueText(word.text) || word.text : word.text,
         })),
       }))
       .filter((cue) => cue.text);
@@ -208,7 +210,13 @@ function whisperPrompt(language: string, glossary: string[], prefix: string) {
   const head =
     language === "en"
       ? "Conversational English transcript."
-      : "台灣繁體中文口語逐字稿。家庭稱呼用阿公、阿嬤。嗯、啊、好哦都保留。";
+      : language === "ja"
+        ? "自然な日本語の書き起こし。"
+        : language === "ko"
+          ? "자연스러운 한국어 전사."
+        : isChineseLang(language) || !language
+          ? "台灣繁體中文口語逐字稿。家庭稱呼用阿公、阿嬤。嗯、啊、好哦都保留。"
+          : "Natural spoken transcript.";
   const terms = glossary.slice(0, 24).join("、");
   return [head, terms, prefix].filter(Boolean).join(" ").slice(-900);
 }
