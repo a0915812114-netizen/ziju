@@ -1,5 +1,5 @@
-import { EditorApp } from "@/components/editor/EditorApp";
+import { ProjectHome } from "@/components/studio/ProjectHome";
 
-export default function StudioPage() {
-  return <EditorApp />;
+export default function StudioIndexPage() {
+  return <ProjectHome />;
 }

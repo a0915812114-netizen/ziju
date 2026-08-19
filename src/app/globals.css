@@ -3,13 +3,13 @@
 :root {
   --bg: #f7f6f2;
   --panel: #ffffff;
-  --line: #e5e3dc;
-  --text: #0a0a0a;
-  --muted: #575751;
+  --line: #eceae3;
+  --text: #111111;
+  --muted: #6b6b64;
   --accent: #1f9e4b;
-  --accent-2: #39ff14;
-  --cut: #00bfef;
-  --wave: #2d8f45;
+  --accent-2: #c8ff3d;
+  --cut: #c5c3bb;
+  --wave: #2f9e48;
   --background: var(--bg);
   --foreground: var(--text);
 }

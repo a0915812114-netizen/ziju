@@ -1,9 +1,10 @@
 "use client";
 
-import { currentCueIndex } from "@/lib/cues";
+import { formatPlayerTime } from "@/lib/time";
+import { cueAtTime } from "@/lib/cues";
 import { SAFE_FRAME, snapIntoSafe } from "@/lib/style";
 import { useEditorStore } from "@/store/editor-store";
-import { type PointerEvent, type RefObject, useEffect, useRef } from "react";
+import { type PointerEvent, type RefObject, useEffect, useRef, useState } from "react";
 import { StyleBar } from "./StyleBar";
 
 type Props = {
@@ -17,36 +18,108 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
   const mediaName = useEditorStore((s) => s.mediaName);
   const cues = useEditorStore((s) => s.cues);
   const currentTimeMs = useEditorStore((s) => s.currentTimeMs);
+  const durationMs = useEditorStore((s) => s.durationMs);
   const orientation = useEditorStore((s) => s.orientation);
   const showSafeFrame = useEditorStore((s) => s.showSafeFrame);
   const style = useEditorStore((s) => s.style);
   const selectedId = useEditorStore((s) => s.selectedId);
   const selectCue = useEditorStore((s) => s.selectCue);
   const patchStyle = useEditorStore((s) => s.patchStyle);
+  const updateCueText = useEditorStore((s) => s.updateCueText);
+  const layoutMode = useEditorStore((s) => s.layoutMode);
   const setOrientation = useEditorStore((s) => s.setOrientation);
   const showStyle = useEditorStore((s) => s.showStyle);
   const playbackRate = useEditorStore((s) => s.playbackRate);
+  const volume = useEditorStore((s) => s.volume);
   const stageRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
-  const active = cues[currentCueIndex(cues, currentTimeMs)];
+  const dragRef = useRef<{ x: number; y: number; px: number; py: number; moved: boolean } | null>(
+    null,
+  );
+  const playing = useEditorStore((s) => s.playing);
+  const [stageW, setStageW] = useState(0);
+  const [clockMs, setClockMs] = useState(currentTimeMs);
+  const overlayMs = playing ? clockMs : currentTimeMs;
+  const active = cueAtTime(cues, overlayMs);
+  const shown = active;
   const frame = SAFE_FRAME[orientation];
+  const fontPx = Math.max(16, (style.fontSize / 100) * (stageW || 360));
+  const draftOrigin = useRef("");
 
   useEffect(() => {
     if (mediaRef.current) mediaRef.current.playbackRate = playbackRate;
   }, [mediaRef, playbackRate]);
 
-  function onPointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (!active) return;
+  useEffect(() => {
+    if (mediaRef.current) mediaRef.current.volume = volume;
+  }, [mediaRef, volume]);
+
+  useEffect(() => {
+    const node = mediaRef.current;
+    if (!node || !mediaUrl) return;
+    let raf = 0;
+    const push = () => {
+      const ms = node.currentTime * 1000;
+      setClockMs(ms);
+      onTime(ms);
+    };
+    const tick = () => {
+      push();
+      if (!node.paused && !node.ended) raf = requestAnimationFrame(tick);
+    };
+    const start = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(tick);
+    };
+    const stop = () => {
+      cancelAnimationFrame(raf);
+      push();
+    };
+    node.addEventListener("play", start);
+    node.addEventListener("pause", stop);
+    node.addEventListener("seeked", push);
+    node.addEventListener("loadedmetadata", push);
+    if (!node.paused) start();
+    else push();
+    return () => {
+      cancelAnimationFrame(raf);
+      node.removeEventListener("play", start);
+      node.removeEventListener("pause", stop);
+      node.removeEventListener("seeked", push);
+      node.removeEventListener("loadedmetadata", push);
+    };
+  }, [mediaRef, mediaUrl, onTime]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const measure = () => setStageW(stage.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [mediaUrl]);
+
+  function onPointerDown(event: PointerEvent<HTMLButtonElement>) {
+    if (!shown) return;
     event.preventDefault();
-    selectCue(active.id);
-    (event.currentTarget as HTMLDivElement).setPointerCapture(event.pointerId);
-    dragRef.current = { x: style.x, y: style.y, px: event.clientX, py: event.clientY };
+    event.stopPropagation();
+    selectCue(shown.id);
+    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
+    dragRef.current = {
+      x: style.x,
+      y: style.y,
+      px: event.clientX,
+      py: event.clientY,
+      moved: false,
+    };
   }
 
   function onPointerMove(event: PointerEvent<HTMLDivElement>) {
     const drag = dragRef.current;
     const stage = stageRef.current;
     if (!drag || !stage) return;
+    if (Math.hypot(event.clientX - drag.px, event.clientY - drag.py) > 5) drag.moved = true;
+    if (!drag.moved) return;
     const rect = stage.getBoundingClientRect();
     const nx = drag.x + ((event.clientX - drag.px) / rect.width) * 100;
     const ny = drag.y + ((event.clientY - drag.py) / rect.height) * 100;
@@ -58,9 +131,14 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
     patchStyle(snapped);
   }
 
-  function onPointerUp(event: PointerEvent<HTMLDivElement>) {
+  function onPointerUp(event: PointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
     dragRef.current = null;
     event.currentTarget.releasePointerCapture(event.pointerId);
+    if (drag && !drag.moved && shown) {
+      mediaRef.current?.pause();
+      selectCue(shown.id);
+    }
   }
 
   function resizeFromCorner(event: PointerEvent<HTMLButtonElement>) {
@@ -81,25 +159,39 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
     window.addEventListener("pointerup", up);
   }
 
+  const overlayStyle = {
+    left: `${style.x}%`,
+    top: `${style.y}%`,
+    transform: "translate(-50%, -50%)",
+    fontFamily: style.fontFamily,
+    fontSize: `${fontPx}px`,
+    color: style.color,
+    WebkitTextStroke: playing ? `${Math.max(1, fontPx * 0.08)}px ${style.strokeColor}` : "0",
+    textShadow: playing
+      ? `0 0 ${Math.max(2, fontPx * 0.12)}px ${style.strokeColor}, 0 ${Math.max(1, fontPx * 0.06)}px ${Math.max(2, fontPx * 0.18)}px ${style.strokeColor}`
+      : "none",
+    paintOrder: "stroke fill" as const,
+    outline: selectedId === shown?.id ? "1px solid var(--accent)" : "none",
+  };
+
   return (
-    <section className="flex min-h-[280px] flex-col border-b border-[var(--line)] bg-[#111] lg:border-r lg:border-b-0">
+    <section className="flex h-full min-h-[280px] flex-col border-b border-[var(--line)] bg-[var(--bg)] lg:border-r lg:border-b-0">
       {showStyle ? <StyleBar /> : null}
-      <div className="relative flex min-h-0 flex-1 items-center justify-center bg-black p-3">
+      <div className="relative flex min-h-0 flex-1 items-center justify-center p-4">
         {mediaUrl ? (
-          <div
-            ref={stageRef}
-            className="relative inline-block max-h-full max-w-full"
-            style={{ containerType: "size" }}
-          >
+          <div ref={stageRef} className="relative inline-block max-h-full max-w-full overflow-hidden rounded-md bg-black">
             <video
               ref={mediaRef}
               src={mediaUrl}
+              playsInline
               className="block max-h-[58vh] max-w-full"
               onTimeUpdate={(event) => onTime(event.currentTarget.currentTime * 1000)}
               onLoadedMetadata={(event) => {
                 const node = event.currentTarget;
                 onDuration(node.duration * 1000);
-                setOrientation(node.videoWidth < node.videoHeight ? "vertical" : "horizontal");
+                if (layoutMode === "auto") {
+                  setOrientation(node.videoWidth < node.videoHeight ? "vertical" : "horizontal");
+                }
               }}
               onPlay={() => {
                 if (mediaRef.current) mediaRef.current.playbackRate = playbackRate;
@@ -130,30 +222,57 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
                 </div>
               </div>
             ) : null}
-            {active?.text ? (
+            {shown ? (
               <div
-                className="absolute z-20 max-w-[86%] cursor-grab touch-none select-none px-2 py-1 text-center leading-snug"
-                style={{
-                  left: `${style.x}%`,
-                  top: `${style.y}%`,
-                  transform: "translate(-50%, -50%)",
-                  fontFamily: style.fontFamily,
-                  fontSize: `${style.fontSize}cqw`,
-                  color: style.color,
-                  WebkitTextStroke: `${style.strokeWidth}px ${style.strokeColor}`,
-                  paintOrder: "stroke fill",
-                  outline:
-                    selectedId === active.id ? "1px solid var(--accent)" : "none",
+                className="absolute z-20 max-w-[86%] px-2 py-1 text-center leading-snug"
+                style={overlayStyle}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (playing) mediaRef.current?.pause();
                 }}
-                onPointerDown={onPointerDown}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
+                onPointerDown={(event) => event.stopPropagation()}
               >
-                <KaraokeText
-                  text={active.text}
-                  words={active.words}
-                  timeMs={currentTimeMs}
-                  karaoke={style.karaoke}
+                {playing ? (
+                  <KaraokeText
+                    text={shown.text}
+                    words={shown.words}
+                    timeMs={overlayMs}
+                    karaoke={style.karaoke}
+                  />
+                ) : (
+                  <textarea
+                    value={shown.text}
+                    rows={2}
+                    className="w-full min-w-[8rem] resize-none bg-black/35 text-center outline-none"
+                    style={{
+                      fontFamily: style.fontFamily,
+                      fontSize: `${fontPx}px`,
+                      color: style.color,
+                      lineHeight: 1.3,
+                    }}
+                    onFocus={() => {
+                      draftOrigin.current = shown.text;
+                      selectCue(shown.id);
+                    }}
+                    onChange={(event) => {
+                      const next = event.currentTarget.value;
+                      if (shown.text === draftOrigin.current && next !== draftOrigin.current) {
+                        useEditorStore.getState().recordHistory();
+                      }
+                      updateCueText(shown.id, next, false);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) event.currentTarget.blur();
+                    }}
+                  />
+                )}
+                <button
+                  type="button"
+                  aria-label="拖動字幕位置"
+                  className="absolute -left-3 top-1/2 h-7 w-3 -translate-y-1/2 cursor-grab rounded-full bg-[var(--accent)]"
+                  onPointerDown={onPointerDown}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={onPointerUp}
                 />
                 <button
                   type="button"
@@ -163,6 +282,24 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
                 />
               </div>
             ) : null}
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 flex items-center gap-2 bg-gradient-to-t from-black/75 to-transparent px-2.5 py-2 text-xs text-white">
+              <button
+                type="button"
+                className="pointer-events-auto flex h-6 w-6 items-center justify-center"
+                onClick={() => {
+                  const node = mediaRef.current;
+                  if (!node) return;
+                  if (node.paused) void node.play();
+                  else node.pause();
+                }}
+                aria-label={playing ? "暫停" : "播放"}
+              >
+                {playing ? "❚❚" : "▶"}
+              </button>
+              <span className="font-mono">
+                {formatPlayerTime(overlayMs)} / {formatPlayerTime(durationMs)}
+              </span>
+            </div>
           </div>
         ) : (
           <div className="px-8 text-center text-[var(--muted)]">
@@ -173,11 +310,11 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
             {mediaName ? <p className="mt-3 text-xs">{mediaName}</p> : null}
             {active?.text ? (
               <p
-                className="mt-8 text-2xl"
+                className="mt-8 text-2xl text-white"
                 style={{
                   fontFamily: style.fontFamily,
                   color: style.color,
-                  WebkitTextStroke: `${style.strokeWidth}px ${style.strokeColor}`,
+                  WebkitTextStroke: `${Math.max(1, fontPx * 0.06)}px ${style.strokeColor}`,
                   paintOrder: "stroke fill",
                 }}
               >

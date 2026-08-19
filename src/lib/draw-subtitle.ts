@@ -1,4 +1,4 @@
-import { currentCueIndex } from "./cues";
+import { cueAtTime } from "./cues";
 import type { Cue } from "./types";
 import type { SubtitleStyle } from "./style";
 
@@ -25,8 +25,7 @@ export function drawSubtitleFrame(
   timeMs: number,
   style: SubtitleStyle,
 ) {
-  const index = currentCueIndex(cues, timeMs);
-  const cue = index >= 0 ? cues[index] : null;
+  const cue = cueAtTime(cues, timeMs);
   if (!cue?.text) return;
 
   const fontPx = Math.max(16, (style.fontSize / 100) * width);

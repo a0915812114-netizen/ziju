@@ -32,3 +32,8 @@ export type AsrStatus = {
   owner: boolean;
   remaining: number | null;
 };
+
+export type SeekOpts = {
+  play?: boolean;
+  pause?: boolean;
+};

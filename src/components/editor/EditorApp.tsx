@@ -1,18 +1,23 @@
 "use client";
 
-import { extractAudio } from "@/lib/extract-audio";
-import type { AsrStatus, Cue } from "@/lib/types";
+import { MAX_MEDIA_MS } from "@/lib/extract-audio";
+import { transcribeMedia, TranscribeError } from "@/lib/transcribe-client";
+import { readDuration } from "@/lib/media-duration";
+import { takePendingUpload } from "@/lib/pending-upload";
+import { getProject, saveProject } from "@/lib/projects";
+import type { AsrStatus, SeekOpts } from "@/lib/types";
 import { peaksFromMedia, syntheticPeaks } from "@/lib/waveform";
 import { useEditorStore } from "@/store/editor-store";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { CueList } from "./CueList";
 import { PreviewPane } from "./PreviewPane";
 import { StatusBar } from "./StatusBar";
 import { Timeline } from "./Timeline";
 import { Toolbar } from "./Toolbar";
-import { TransportBar } from "./TransportBar";
 
-export function EditorApp() {
+export function EditorApp({ projectId }: { projectId: string }) {
+  const router = useRouter();
   const mediaRef = useRef<HTMLVideoElement>(null);
   const setAsr = useEditorStore((s) => s.setAsr);
   const setJob = useEditorStore((s) => s.setJob);
@@ -33,6 +38,36 @@ export function EditorApp() {
   const currentTimeMs = useEditorStore((s) => s.currentTimeMs);
   const setPeaks = useEditorStore((s) => s.setPeaks);
   const selectRelative = useEditorStore((s) => s.selectRelative);
+  const loadProject = useEditorStore((s) => s.loadProject);
+  const snapshotProject = useEditorStore((s) => s.snapshotProject);
+
+  useEffect(() => {
+    const project = getProject(projectId);
+    if (!project) {
+      router.replace("/studio");
+      return;
+    }
+    loadProject(project);
+    const pending = takePendingUpload(projectId);
+    if (pending) window.setTimeout(() => void attachMedia(pending), 0);
+  }, [projectId, loadProject, router]);
+
+  useEffect(() => {
+    let timer = 0;
+    const persist = () => {
+      const snap = snapshotProject();
+      if (snap && snap.id === projectId) saveProject(snap);
+    };
+    const unsub = useEditorStore.subscribe(() => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(persist, 450);
+    });
+    return () => {
+      unsub();
+      window.clearTimeout(timer);
+      persist();
+    };
+  }, [projectId, snapshotProject]);
 
   useEffect(() => {
     fetch("/api/transcribe")
@@ -60,7 +95,24 @@ export function EditorApp() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Alt") setAltMode(event.type === "keydown");
-      if (event.type !== "keydown" || isTyping(event.target)) return;
+      if (event.type !== "keydown") return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        document.getElementById("ziju-cue-search")?.focus();
+        return;
+      }
+      if (isTyping(event.target)) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) useEditorStore.getState().redo();
+        else useEditorStore.getState().undo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        useEditorStore.getState().redo();
+        return;
+      }
       if (event.code === "Space") {
         event.preventDefault();
         if (useEditorStore.getState().job.phase === "exporting") return;
@@ -85,13 +137,13 @@ export function EditorApp() {
         event.preventDefault();
         const id = selectRelative(-1);
         const cue = useEditorStore.getState().cues.find((item) => item.id === id);
-        if (cue && mediaRef.current) mediaRef.current.currentTime = cue.startMs / 1000;
+        if (cue) seek(cue.startMs, { play: true });
       }
       if (event.key === "ArrowDown") {
         event.preventDefault();
         const id = selectRelative(1);
         const cue = useEditorStore.getState().cues.find((item) => item.id === id);
-        if (cue && mediaRef.current) mediaRef.current.currentTime = cue.startMs / 1000;
+        if (cue) seek(cue.startMs, { play: true });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -118,26 +170,48 @@ export function EditorApp() {
     };
   }, [mediaUrl, setPeaks]);
 
+  async function attachMedia(file: File) {
+    const duration = await readDuration(file);
+    setMedia(file, duration);
+    setJob({ phase: "ready", progress: 1, message: "" });
+    const first = useEditorStore.getState().cues[0];
+    if (!first) return;
+    window.setTimeout(() => {
+      if (mediaRef.current) mediaRef.current.currentTime = first.startMs / 1000;
+      setCurrentTime(first.startMs);
+    }, 80);
+  }
+
   async function handleFile(file: File) {
     try {
       setJob({ phase: "extracting", progress: 0, message: "讀取檔案…" });
       const duration = await readDuration(file);
+      if (duration > MAX_MEDIA_MS) {
+        setJob({ phase: "error", progress: 0, message: "目前最長 40 分鐘。請先剪短再製作。" });
+        return;
+      }
       setMedia(file, duration);
-      const audio = await extractAudio(file, (progress, message) => {
-        setJob({ phase: "extracting", progress, message });
+      const cues = await transcribeMedia({
+        file,
+        language: useEditorStore.getState().language,
+        glossary,
+        durationMs: duration,
+        signal: new AbortController().signal,
+        onExtract: (progress, message) => {
+          setJob({ phase: "extracting", progress, message });
+        },
+        onTranscribe: (progress, message) => {
+          setJob({ phase: "transcribing", progress, message });
+        },
       });
-      setJob({ phase: "transcribing", progress: 0.9, message: "正在聽打…" });
-      const body = new FormData();
-      body.set("audio", audio);
-      body.set("glossary", glossary.join("\n"));
-      const response = await fetch("/api/transcribe", { method: "POST", body });
-      const payload = (await response.json()) as {
-        cues?: Cue[];
-        message?: string;
-        error?: string;
-      };
-      if (!response.ok || !payload.cues) {
-        if (payload.error === "NO_KEY") {
+      setCues(cues);
+      const first = cues[0];
+      if (first) seek(first.startMs);
+      setJob({ phase: "ready", progress: 1, message: "" });
+      setToast(`聽打完成，共 ${cues.length} 句`);
+    } catch (error) {
+      if (error instanceof TranscribeError) {
+        if (error.code === "NO_KEY") {
           setJob({
             phase: "ready",
             progress: 1,
@@ -146,31 +220,30 @@ export function EditorApp() {
           setToast("尚未設定 API 金鑰。影片留在時間軸上，可先練習拖曳與切點。");
           return;
         }
-        if (payload.error === "RATE_LIMITED") {
+        if (error.code === "RATE_LIMITED" || error.code === "TOO_LARGE" || error.code === "EMPTY") {
           setJob({ phase: "ready", progress: 1, message: "" });
-          setToast(payload.message ?? "公開聽打次數用完了，仍可編輯與燒字幕");
+          setToast(error.message);
           return;
         }
-        if (payload.error === "TOO_LARGE") {
-          setJob({ phase: "ready", progress: 1, message: "" });
-          setToast(payload.message ?? "音訊太大，請改用較短片段");
-          return;
-        }
-        throw new Error(payload.message ?? "聽打失敗");
       }
-      setCues(payload.cues);
-      setJob({ phase: "ready", progress: 1, message: "" });
-      setToast(`聽打完成，共 ${payload.cues.length} 句`);
-    } catch (error) {
       const message = error instanceof Error ? error.message : "處理失敗";
       setJob({ phase: "error", progress: 0, message });
     }
   }
 
-  function seek(ms: number) {
+  function seek(ms: number, opts?: SeekOpts) {
     const node = mediaRef.current;
-    if (node) node.currentTime = ms / 1000;
-    setCurrentTime(ms);
+    const time = Math.max(0, ms);
+    setCurrentTime(time);
+    const view = useEditorStore.getState();
+    const viewEnd = view.viewStartMs + view.viewDurationMs;
+    if (time < view.viewStartMs || time > viewEnd) {
+      view.setView(time - view.viewDurationMs * 0.2, view.viewDurationMs);
+    }
+    if (!node) return;
+    node.currentTime = time / 1000;
+    if (opts?.play) void node.play();
+    else if (opts?.pause) node.pause();
   }
 
   return (
@@ -184,12 +257,11 @@ export function EditorApp() {
           />
         </div>
       ) : null}
-      <Timeline onSeek={seek} />
-      <TransportBar mediaRef={mediaRef} />
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(280px,1.1fr)_minmax(320px,0.9fr)]">
+      <Timeline onSeek={seek} mediaRef={mediaRef} />
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(240px,0.85fr)_minmax(360px,1.15fr)]">
         <PreviewPane
           mediaRef={mediaRef}
-          onTime={(ms) => setCurrentTime(ms)}
+          onTime={setCurrentTime}
           onDuration={(ms) => {
             if (ms > 0 && Math.abs(ms - durationMs) > 250) {
               useEditorStore.setState({ durationMs: ms });
@@ -204,7 +276,7 @@ export function EditorApp() {
       job.phase === "extracting" ||
       job.phase === "transcribing" ||
       job.phase === "exporting" ? (
-        <div className="pointer-events-none absolute bottom-12 left-1/2 z-20 -translate-x-1/2 rounded-full border border-[var(--line)] bg-[var(--panel)] px-4 py-2 text-sm text-[var(--muted)]">
+        <div className="pointer-events-none absolute bottom-12 left-1/2 z-20 -translate-x-1/2 rounded-full bg-[#111] px-4 py-2 text-sm text-white">
           {job.phase === "exporting"
             ? `${job.message} ${Math.round(job.progress * 100)}%`
             : job.phase === "error"
@@ -220,21 +292,4 @@ function isTyping(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || target.isContentEditable;
-}
-
-function readDuration(file: File) {
-  return new Promise<number>((resolve) => {
-    const url = URL.createObjectURL(file);
-    const node = document.createElement("video");
-    node.preload = "metadata";
-    node.src = url;
-    node.onloadedmetadata = () => {
-      resolve(Math.round((node.duration || 0) * 1000));
-      URL.revokeObjectURL(url);
-    };
-    node.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve(0);
-    };
-  });
 }

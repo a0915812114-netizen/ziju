@@ -1,5 +1,5 @@
 const COOKIE = "ziju_owner";
-const PUBLIC_DAILY = 5;
+export const PUBLIC_DAILY = 5;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 
 const hits = new Map<string, { count: number; resetAt: number }>();

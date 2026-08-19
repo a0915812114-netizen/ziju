@@ -1,26 +1,28 @@
 "use client";
 
 import { detectSceneCuts } from "@/lib/cuts";
-import { currentCueIndex } from "@/lib/cues";
+import { cueAtTime } from "@/lib/cues";
 import { clamp, snapMs, snapTargets } from "@/lib/snap";
-import { formatPrecise } from "@/lib/time";
+import { formatPlayerTime } from "@/lib/time";
+import type { SeekOpts } from "@/lib/types";
 import { drawWaveform } from "@/lib/waveform";
 import { useEditorStore } from "@/store/editor-store";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 
 type Props = {
-  onSeek: (ms: number) => void;
+  onSeek: (ms: number, opts?: SeekOpts) => void;
+  mediaRef: RefObject<HTMLVideoElement | null>;
 };
 
 type Drag =
-  | { kind: "move"; id: string; start: number; end: number; originMs: number }
+  | { kind: "move"; id: string; start: number; end: number; originMs: number; originX: number }
   | { kind: "resize"; id: string; edge: "start" | "end"; start: number; end: number }
   | { kind: "create"; originMs: number }
   | { kind: "pan"; originX: number; originView: number };
 
 const MIN_CUE_MS = 80;
 
-export function Timeline({ onSeek }: Props) {
+export function Timeline({ onSeek, mediaRef }: Props) {
   const cues = useEditorStore((s) => s.cues);
   const durationMs = useEditorStore((s) => s.durationMs);
   const currentTimeMs = useEditorStore((s) => s.currentTimeMs);
@@ -40,19 +42,32 @@ export function Timeline({ onSeek }: Props) {
   const setCutPoints = useEditorStore((s) => s.setCutPoints);
   const setCutDetectProgress = useEditorStore((s) => s.setCutDetectProgress);
   const setToast = useEditorStore((s) => s.setToast);
+  const splitAtPlayhead = useEditorStore((s) => s.splitAtPlayhead);
+  const recordHistory = useEditorStore((s) => s.recordHistory);
+  const volume = useEditorStore((s) => s.volume);
+  const setVolume = useEditorStore((s) => s.setVolume);
+  const playbackRate = useEditorStore((s) => s.playbackRate);
+  const setPlaybackRate = useEditorStore((s) => s.setPlaybackRate);
+  const past = useEditorStore((s) => s.past);
+  const future = useEditorStore((s) => s.future);
+  const undo = useEditorStore((s) => s.undo);
+  const redo = useEditorStore((s) => s.redo);
+  const setShowStyle = useEditorStore((s) => s.setShowStyle);
+  const showStyle = useEditorStore((s) => s.showStyle);
 
   const trackRef = useRef<HTMLDivElement>(null);
+  const waveRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const dragRef = useRef<Drag | null>(null);
   const [draft, setDraft] = useState<{ start: number; end: number } | null>(null);
   const [guideMs, setGuideMs] = useState<number | null>(null);
-  const activeId = cues[currentCueIndex(cues, currentTimeMs)]?.id;
+  const activeId = cueAtTime(cues, currentTimeMs)?.id;
   const total = Math.max(durationMs, 1);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const track = trackRef.current;
-    if (!canvas || !track) return;
+    const wave = waveRef.current;
+    if (!canvas || !wave) return;
     const color =
       getComputedStyle(document.documentElement).getPropertyValue("--wave").trim() ||
       "#2d8f45";
@@ -60,7 +75,7 @@ export function Timeline({ onSeek }: Props) {
       drawWaveform(canvas, peaks, viewStartMs, viewDurationMs, total, color);
     paint();
     const observer = new ResizeObserver(paint);
-    observer.observe(track);
+    observer.observe(wave);
     return () => observer.disconnect();
   }, [peaks, viewStartMs, viewDurationMs, total]);
 
@@ -100,7 +115,9 @@ export function Timeline({ onSeek }: Props) {
   }
 
   function startDrag(next: Drag) {
+    if (next.kind === "resize") recordHistory();
     dragRef.current = next;
+    let moved = false;
     const onMove = (event: MouseEvent) => {
       const drag = dragRef.current;
       if (!drag) return;
@@ -124,6 +141,11 @@ export function Timeline({ onSeek }: Props) {
         const end = Math.max(drag.originMs, time);
         setDraft({ start, end });
         return;
+      }
+      if (drag.kind === "move" && !moved) {
+        if (Math.abs(event.clientX - drag.originX) < 5) return;
+        moved = true;
+        recordHistory();
       }
       const otherTargets = snapTargets({
         durationMs: state.durationMs || 1,
@@ -164,10 +186,14 @@ export function Timeline({ onSeek }: Props) {
       const drag = dragRef.current;
       dragRef.current = null;
       setGuideMs(null);
+      if (drag?.kind === "move" && !moved) {
+        onSeek(drag.originMs, { play: true });
+        return;
+      }
       if (drag?.kind === "create") {
         const time = clientTime(event.clientX);
         if (Math.abs(time - drag.originMs) < 40) {
-          onSeek(drag.originMs);
+          onSeek(drag.originMs, { play: true });
           setDraft(null);
           return;
         }
@@ -224,7 +250,7 @@ export function Timeline({ onSeek }: Props) {
       </div>
       <div
         ref={trackRef}
-        className="relative h-36 cursor-crosshair overflow-hidden rounded-md bg-[#f3f1ea]"
+        className="relative overflow-hidden rounded-md bg-[#f6f4ee]"
         onMouseDown={(event) => {
           if (event.button === 1 || event.altKey) {
             event.preventDefault();
@@ -264,10 +290,16 @@ export function Timeline({ onSeek }: Props) {
               start: cue.startMs,
               end: cue.endMs,
               originMs: clientTime(event.clientX),
+              originX: event.clientX,
             });
             return;
           }
-          startDrag({ kind: "create", originMs: clientTime(event.clientX) });
+          const lane = (event.target as HTMLElement).closest("[data-lane]")?.getAttribute("data-lane");
+          if (lane === "wave") {
+            startDrag({ kind: "create", originMs: clientTime(event.clientX) });
+            return;
+          }
+          onSeek(clientTime(event.clientX));
         }}
         onDoubleClick={(event) => {
           event.preventDefault();
@@ -278,84 +310,109 @@ export function Timeline({ onSeek }: Props) {
           onSeek(clientTime(event.clientX));
         }}
       >
-        <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
-        {cutPoints.map((ms) =>
-          ms >= viewStartMs && ms <= viewEnd ? (
-            <div
-              key={`cut-${ms}`}
-              className="pointer-events-none absolute top-0 z-10 h-full w-px bg-[var(--cut)]"
-              style={{ left: `${((ms - viewStartMs) / viewDurationMs) * 100}%` }}
-            >
-              <span className="absolute top-1 left-1/2 h-2 w-2 -translate-x-1/2 rounded-full bg-[var(--cut)]" />
-            </div>
-          ) : null,
-        )}
-        {marks.map((ms) =>
-          ms >= viewStartMs && ms <= viewEnd ? (
-            <button
-              key={`mark-${ms}`}
-              type="button"
-              title="對齊點，再點一次可移除"
-              className="absolute top-0 z-20 h-full w-3 -translate-x-1/2"
-              style={{ left: `${((ms - viewStartMs) / viewDurationMs) * 100}%` }}
-              onClick={(event) => {
-                event.stopPropagation();
-                onSeek(ms);
-              }}
-              onDoubleClick={(event) => {
-                event.stopPropagation();
-                toggleMark(ms);
-              }}
-            >
-              <span className="absolute top-0 left-1/2 h-0 w-0 -translate-x-1/2 border-x-4 border-t-8 border-x-transparent border-t-[var(--accent)]" />
-            </button>
-          ) : null,
-        )}
-        {cues
-          .filter((cue) => cue.endMs >= viewStartMs && cue.startMs <= viewEnd)
-          .map((cue) => {
-            const left = ((cue.startMs - viewStartMs) / viewDurationMs) * 100;
-            const width = ((cue.endMs - cue.startMs) / viewDurationMs) * 100;
-            const selected = cue.id === selectedId;
-            const active = cue.id === activeId;
-            return (
+        <div ref={waveRef} data-lane="wave" className="relative h-[7.5rem] cursor-crosshair">
+          <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
+          {cues
+            .filter((cue) => cue.endMs >= viewStartMs && cue.startMs <= viewEnd)
+            .map((cue) => {
+              const left = ((cue.startMs - viewStartMs) / viewDurationMs) * 100;
+              const width = ((cue.endMs - cue.startMs) / viewDurationMs) * 100;
+              const isSelected = cue.id === selectedId;
+              return (
+                <div
+                  key={`band-${cue.id}`}
+                  className="pointer-events-none absolute top-0 z-[1] h-full"
+                  style={{
+                    left: `${left}%`,
+                    width: `${Math.max(width, 0.2)}%`,
+                    background: isSelected ? "rgba(0, 0, 0, 0.08)" : "transparent",
+                    boxShadow: "inset 1px 0 0 rgba(80,80,80,0.28), inset -1px 0 0 rgba(80,80,80,0.28)",
+                  }}
+                />
+              );
+            })}
+          {cues
+            .filter((cue) => cue.endMs >= viewStartMs && cue.startMs <= viewEnd)
+            .map((cue) => (
               <div
-                key={cue.id}
-                data-cue-block={cue.id}
-                title={cue.text || "（新字幕）"}
-                className="absolute top-0 z-10 h-full overflow-hidden text-left text-[11px] leading-[9rem] whitespace-nowrap"
-                style={{
-                  left: `${left}%`,
-                  width: `${Math.max(width, 0.35)}%`,
-                  background: selected
-                    ? "rgba(57, 255, 20, 0.42)"
-                    : active
-                      ? "rgba(31, 158, 75, 0.22)"
-                      : "rgba(10, 10, 10, 0.10)",
-                  color: "#0a0a0a",
+                key={`edge-${cue.id}`}
+                className="pointer-events-none absolute top-0 z-10 h-full w-px bg-black/25"
+                style={{ left: `${((cue.startMs - viewStartMs) / viewDurationMs) * 100}%` }}
+              />
+            ))}
+          {cues
+            .filter((cue) => cue.endMs >= viewStartMs && cue.startMs <= viewEnd)
+            .map((cue) => {
+              const left = ((cue.startMs - viewStartMs) / viewDurationMs) * 100;
+              const width = ((cue.endMs - cue.startMs) / viewDurationMs) * 100;
+              const isSelected = cue.id === selectedId;
+              const active = cue.id === activeId;
+              return (
+                <div
+                  key={cue.id}
+                  data-cue-block={cue.id}
+                  title={cue.text || "（新字幕）"}
+                  className="absolute top-1.5 z-20 h-[22px] overflow-hidden rounded-[3px] border border-black/10 bg-white text-left text-[11px] leading-[22px] whitespace-nowrap text-[#111] shadow-[0_1px_2px_rgba(0,0,0,0.06)]"
+                  style={{
+                    left: `${left}%`,
+                    width: `${Math.max(width, 0.35)}%`,
+                    background: isSelected || active ? "#eceae3" : "#fff",
+                  }}
+                >
+                  <span
+                    data-handle="start"
+                    className="absolute top-0 left-0 z-10 h-full w-1.5 cursor-ew-resize"
+                  />
+                  <span className="pointer-events-none px-1.5">{cue.text || "（新字幕）"}</span>
+                  <span
+                    data-handle="end"
+                    className="absolute top-0 right-0 z-10 h-full w-1.5 cursor-ew-resize"
+                  />
+                </div>
+              );
+            })}
+          {cutPoints.map((ms) =>
+            ms >= viewStartMs && ms <= viewEnd ? (
+              <div
+                key={`cut-${ms}`}
+                className="pointer-events-none absolute top-0 z-10 h-full w-px bg-[var(--cut)]"
+                style={{ left: `${((ms - viewStartMs) / viewDurationMs) * 100}%` }}
+              >
+                <span className="absolute top-1 left-1/2 h-2 w-2 -translate-x-1/2 rounded-full bg-[var(--cut)]" />
+              </div>
+            ) : null,
+          )}
+          {marks.map((ms) =>
+            ms >= viewStartMs && ms <= viewEnd ? (
+              <button
+                key={`mark-${ms}`}
+                type="button"
+                title="對齊點，再點一次可移除"
+                className="absolute top-0 z-20 h-full w-3 -translate-x-1/2"
+                style={{ left: `${((ms - viewStartMs) / viewDurationMs) * 100}%` }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSeek(ms, { play: true });
+                }}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  toggleMark(ms);
                 }}
               >
-                <span
-                  data-handle="start"
-                  className="absolute top-0 left-0 z-10 h-full w-1.5 cursor-ew-resize bg-black/20"
-                />
-                <span className="pointer-events-none px-2">{cue.text || "（新字幕）"}</span>
-                <span
-                  data-handle="end"
-                  className="absolute top-0 right-0 z-10 h-full w-1.5 cursor-ew-resize bg-black/20"
-                />
-              </div>
-            );
-          })}
-        {draft ? (
-          <div
-            className="pointer-events-none absolute top-10 z-30 h-16 rounded-sm bg-[var(--accent-2)]/40"
-            style={{
-              left: `${((draft.start - viewStartMs) / viewDurationMs) * 100}%`,
-              width: `${((draft.end - draft.start) / viewDurationMs) * 100}%`,
-            }}
-          />
-        ) : null}
+                <span className="absolute top-0 left-1/2 h-0 w-0 -translate-x-1/2 border-x-4 border-t-8 border-x-transparent border-t-[var(--accent)]" />
+              </button>
+            ) : null,
+          )}
+          {draft ? (
+            <div
+              className="pointer-events-none absolute top-4 z-30 h-16 rounded-sm bg-[var(--accent-2)]/40"
+              style={{
+                left: `${((draft.start - viewStartMs) / viewDurationMs) * 100}%`,
+                width: `${((draft.end - draft.start) / viewDurationMs) * 100}%`,
+              }}
+            />
+          ) : null}
+        </div>
         {guideMs != null ? (
           <div
             className="pointer-events-none absolute top-0 z-40 h-full w-px bg-[var(--accent)]"
@@ -367,23 +424,107 @@ export function Timeline({ onSeek }: Props) {
           style={{ left: `${((currentTimeMs - viewStartMs) / viewDurationMs) * 100}%` }}
         />
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-[var(--muted)]">
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-[var(--muted)]">
         {selected ? (
-          <span className="font-mono text-[var(--text)]">
-            {formatPrecise(selected.startMs)} → {formatPrecise(selected.endMs)}
-            <span className="ml-2 text-[var(--muted)]">
+          <span className="text-[var(--text)]">
+            語句 開始{" "}
+            <span className="font-mono font-medium">{formatPlayerTime(selected.startMs, true)}</span>{" "}
+            結束{" "}
+            <span className="font-mono font-medium">{formatPlayerTime(selected.endMs, true)}</span>{" "}
+            <span className="font-mono font-medium">
               {((selected.endMs - selected.startMs) / 1000).toFixed(3)} 秒
             </span>
           </span>
         ) : (
-          <span>點一句字幕，這裡會顯示起迄毫秒</span>
+          <span>點波形上的字幕塊，這裡會顯示這句起迄</span>
         )}
-        <button type="button" className="btn" onClick={runCutDetect}>
+        <button
+          type="button"
+          className="btn primary relative"
+          onClick={() => {
+            if (!splitAtPlayhead()) setToast("把播放頭放在字幕上，再切過當前");
+          }}
+        >
+          切過當前
+          <span className="ml-1 rounded-full bg-[#111] px-1.5 py-px text-[9px] font-bold text-[var(--accent-2)]">
+            NEW
+          </span>
+        </button>
+        <button
+          type="button"
+          className={`btn ${cutPoints.length ? "primary" : ""}`}
+          onClick={runCutDetect}
+        >
           {cutDetectProgress == null
             ? "切點偵測"
             : `分析中 ${Math.round(cutDetectProgress * 100)}%`}
         </button>
+        <button
+          type="button"
+          className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--accent-2)] text-sm font-bold text-[#0a0a0a]"
+          onClick={() => {
+            const node = mediaRef.current;
+            if (!node?.src) return;
+            if (node.paused) void node.play();
+            else node.pause();
+          }}
+          aria-label={playing ? "暫停" : "播放"}
+        >
+          {playing ? "❚❚" : "▶"}
+        </button>
+        <span className="font-mono text-[var(--text)]">
+          {formatPlayerTime(currentTimeMs, true)} / {formatPlayerTime(durationMs)}
+        </span>
+        <select
+          className="rounded-full border border-[var(--line)] bg-white px-2 py-1 text-xs"
+          value={playbackRate}
+          onChange={(event) => {
+            const rate = Number(event.target.value);
+            setPlaybackRate(rate);
+            if (mediaRef.current) mediaRef.current.playbackRate = rate;
+          }}
+        >
+          {[0.75, 1, 1.25, 1.5, 2].map((rate) => (
+            <option key={rate} value={rate}>
+              {rate}x
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="rounded-full px-2 py-1 hover:bg-[var(--bg)] disabled:opacity-30"
+          disabled={past.length === 0}
+          onClick={undo}
+        >
+          復原
+        </button>
+        <button
+          type="button"
+          className="rounded-full px-2 py-1 hover:bg-[var(--bg)] disabled:opacity-30"
+          disabled={future.length === 0}
+          onClick={redo}
+        >
+          重做
+        </button>
+        <button
+          type="button"
+          className={`rounded-full px-2 py-1 hover:bg-[var(--bg)] ${showStyle ? "text-[var(--accent)]" : ""}`}
+          onClick={() => setShowStyle(!showStyle)}
+        >
+          字幕樣式
+        </button>
         <label className="ml-auto flex items-center gap-2">
+          音量
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={Math.round(volume * 100)}
+            className="w-20"
+            onChange={(event) => setVolume(Number(event.target.value) / 100)}
+          />
+        </label>
+        <label className="flex items-center gap-2">
           縮放 {zoomPct}%
           <input
             type="range"

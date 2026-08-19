@@ -116,28 +116,88 @@ function isLatin(char: string) {
   return /[A-Za-z0-9]/.test(char);
 }
 
+export function cueHasFind(text: string, find: string) {
+  const needle = find.trim();
+  if (!needle) return false;
+  return fold(text).includes(fold(needle));
+}
+
 export function replaceInCues(cues: Cue[], find: string, replaceWith: string) {
-  if (!find) return { cues, count: 0 };
+  const needle = find.trim();
+  if (!needle) return { cues, count: 0 };
   let count = 0;
   const next = cues.map((cue) => {
-    if (!cue.text.includes(find)) return cue;
-    const pieces = cue.text.split(find);
-    count += pieces.length - 1;
+    const result = replaceInText(cue.text, needle, replaceWith);
+    if (result.count === 0) return cue;
+    count += result.count;
     return {
       ...cue,
-      text: pieces.join(replaceWith),
-      words: cue.words.map((word) =>
-        word.text === find ? { ...word, text: replaceWith } : word,
-      ),
+      text: result.text,
+      words: cue.words.map((word) => {
+        const wordResult = replaceInText(word.text, needle, replaceWith);
+        return wordResult.count ? { ...word, text: wordResult.text } : word;
+      }),
     };
   });
   return { cues: next, count };
+}
+
+export function replaceInCue(cue: Cue, find: string, replaceWith: string) {
+  const result = replaceInCues([cue], find, replaceWith);
+  return { cue: result.cues[0] ?? cue, count: result.count };
+}
+
+function replaceInText(text: string, find: string, replaceWith: string) {
+  const needle = fold(find);
+  if (!needle) return { text, count: 0 };
+  const source = fold(text);
+  let count = 0;
+  let out = "";
+  let cursor = 0;
+  let from = 0;
+  while (from < text.length) {
+    const at = source.indexOf(needle, from);
+    if (at < 0) {
+      out += text.slice(cursor);
+      break;
+    }
+    out += text.slice(cursor, at) + replaceWith;
+    count += 1;
+    cursor = at + find.trim().length;
+    from = cursor;
+  }
+  return { text: out, count };
+}
+
+function fold(text: string) {
+  return text.toLocaleLowerCase("zh-Hant");
 }
 
 export function currentCueIndex(cues: Cue[], timeMs: number) {
   return cues.findIndex(
     (cue) => timeMs >= cue.startMs && timeMs < cue.endMs,
   );
+}
+
+export function cueAtTime(cues: Cue[], timeMs: number): Cue | undefined {
+  if (cues.length === 0) return undefined;
+  const exact = cues.find(
+    (cue) => timeMs >= cue.startMs && timeMs <= cue.endMs,
+  );
+  if (exact) return exact;
+  let last: Cue | undefined;
+  for (const cue of cues) {
+    if (cue.startMs <= timeMs) last = cue;
+    else break;
+  }
+  if (!last) {
+    const first = cues[0];
+    if (first && timeMs + 160 >= first.startMs) return first;
+    return undefined;
+  }
+  const next = cues[cues.findIndex((cue) => cue.id === last.id) + 1];
+  if (next) return last;
+  return timeMs <= last.endMs + 400 ? last : undefined;
 }
 
 export function toSrt(cues: Cue[]) {

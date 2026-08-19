@@ -1,4 +1,6 @@
 export type Orientation = "horizontal" | "vertical";
+export type LayoutMode = "auto" | "horizontal" | "vertical" | "custom";
+export type AsrLanguage = "auto" | "zh" | "en";
 
 export type SubtitleStyle = {
   fontFamily: string;

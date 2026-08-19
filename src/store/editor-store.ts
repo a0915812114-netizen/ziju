@@ -7,6 +7,7 @@ import {
   mergeCues,
   parseSrt,
   replaceInCues,
+  replaceInCue,
   sortCues,
   splitCue,
   splitCueAtTime,
@@ -15,21 +16,37 @@ import {
 } from "@/lib/cues";
 import { DEMO_CUT_POINTS } from "@/lib/cuts";
 import { DEMO_CUES, DEMO_MEDIA_LABEL } from "@/lib/demo-project";
+import { getProject, type ProjectRecord } from "@/lib/projects";
 import { clamp } from "@/lib/snap";
-import { defaultStyle, type Orientation, type SubtitleStyle } from "@/lib/style";
+import {
+  defaultStyle,
+  type AsrLanguage,
+  type LayoutMode,
+  type Orientation,
+  type SubtitleStyle,
+} from "@/lib/style";
 import type { AsrStatus, Cue, JobStatus } from "@/lib/types";
 import { syntheticPeaks } from "@/lib/waveform";
 
 const MIN_CUE_MS = 80;
 const MIN_VIEW_MS = 1500;
+const HISTORY_LIMIT = 50;
+
+type CueSnapshot = {
+  cues: Cue[];
+  selectedId: string | null;
+  marks: number[];
+};
 
 type EditorState = {
+  projectId: string | null;
   name: string;
   cues: Cue[];
   selectedId: string | null;
   currentTimeMs: number;
   durationMs: number;
   mediaUrl: string | null;
+  mediaFile: File | null;
   mediaName: string | null;
   glossary: string[];
   job: JobStatus;
@@ -46,11 +63,16 @@ type EditorState = {
   viewDurationMs: number;
   cutDetectProgress: number | null;
   orientation: Orientation;
+  layoutMode: LayoutMode;
+  language: AsrLanguage;
   showSafeFrame: boolean;
   style: SubtitleStyle;
   playbackRate: number;
+  volume: number;
   showStyle: boolean;
   showShortcuts: boolean;
+  past: CueSnapshot[];
+  future: CueSnapshot[];
   setAsr: (asr: AsrStatus) => void;
   setJob: (job: Partial<JobStatus> & Pick<JobStatus, "phase">) => void;
   setMedia: (file: File, durationMs: number) => void;
@@ -59,7 +81,7 @@ type EditorState = {
   setCurrentTime: (ms: number) => void;
   setPlaying: (playing: boolean) => void;
   selectCue: (id: string | null) => void;
-  updateCueText: (id: string, text: string) => void;
+  updateCueText: (id: string, text: string, record?: boolean) => void;
   setCueTiming: (id: string, startMs: number, endMs: number) => void;
   addCueAt: (startMs: number, endMs: number) => string;
   removeCue: (id: string) => void;
@@ -68,6 +90,7 @@ type EditorState = {
   selectRelative: (dir: -1 | 1) => string | null;
   mergeWithPrevious: (id: string) => void;
   replaceAll: () => number;
+  replaceInSelected: () => number;
   addGlossary: (term: string) => void;
   removeGlossary: (term: string) => void;
   toggleMark: (ms: number) => void;
@@ -76,13 +99,20 @@ type EditorState = {
   setPeaks: (peaks: number[]) => void;
   setView: (startMs: number, durationMs: number) => void;
   setOrientation: (orientation: Orientation) => void;
+  setLayoutMode: (mode: LayoutMode) => void;
   setShowSafeFrame: (on: boolean) => void;
   patchStyle: (patch: Partial<SubtitleStyle>) => void;
   setPlaybackRate: (rate: number) => void;
+  setVolume: (volume: number) => void;
   setShowStyle: (on: boolean) => void;
   setShowShortcuts: (on: boolean) => void;
+  recordHistory: () => void;
+  undo: () => void;
+  redo: () => void;
   importSrt: (raw: string) => number;
   loadDemo: () => void;
+  loadProject: (project: ProjectRecord) => void;
+  snapshotProject: () => ProjectRecord | null;
   setFind: (text: string) => void;
   setReplace: (text: string) => void;
   setToast: (text: string | null) => void;
@@ -103,12 +133,14 @@ function fitView(durationMs: number) {
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
+  projectId: null,
   name: "未命名專案",
   cues: [],
   selectedId: null,
   currentTimeMs: 0,
   durationMs: 0,
   mediaUrl: null,
+  mediaFile: null,
   mediaName: null,
   glossary: readGlossary(),
   job: idleJob,
@@ -125,11 +157,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   viewDurationMs: MIN_VIEW_MS,
   cutDetectProgress: null,
   orientation: "horizontal",
+  layoutMode: "auto",
+  language: "auto",
   showSafeFrame: true,
   style: defaultStyle("horizontal"),
   playbackRate: 1,
+  volume: 1,
   showStyle: false,
   showShortcuts: false,
+  past: [],
+  future: [],
   setAsr: (asr) => set({ asr }),
   setJob: (job) =>
     set((state) => ({
@@ -143,6 +180,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     revoke(get().mediaUrl);
     set({
       mediaUrl: URL.createObjectURL(file),
+      mediaFile: file,
       mediaName: file.name,
       name: file.name.replace(/\.[^.]+$/, ""),
       durationMs,
@@ -151,6 +189,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       cutPoints: [],
       peaks: [],
       playing: false,
+      past: [],
+      future: [],
       ...fitView(durationMs),
     });
   },
@@ -158,6 +198,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     revoke(get().mediaUrl);
     set({
       mediaUrl: null,
+      mediaFile: null,
       mediaName: null,
       durationMs: 0,
       currentTimeMs: 0,
@@ -173,16 +214,52 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set({
       cues: sorted,
       selectedId: sorted[0]?.id ?? null,
+      currentTimeMs: sorted[0]?.startMs ?? get().currentTimeMs,
+      past: [],
+      future: [],
       job: { phase: "ready", progress: 1, message: `共 ${sorted.length} 句` },
     });
   },
   setCurrentTime: (ms) => set({ currentTimeMs: Math.max(0, ms) }),
   setPlaying: (playing) => set({ playing }),
   selectCue: (id) => set({ selectedId: id }),
-  updateCueText: (id, text) =>
+  recordHistory: () => {
+    const state = get();
+    set({
+      past: [...state.past.slice(-(HISTORY_LIMIT - 1)), capture(state)],
+      future: [],
+    });
+  },
+  undo: () => {
+    const state = get();
+    const prev = state.past[state.past.length - 1];
+    if (!prev) return;
+    set({
+      past: state.past.slice(0, -1),
+      future: [...state.future, capture(state)],
+      cues: prev.cues,
+      selectedId: prev.selectedId,
+      marks: prev.marks,
+    });
+  },
+  redo: () => {
+    const state = get();
+    const next = state.future[state.future.length - 1];
+    if (!next) return;
+    set({
+      future: state.future.slice(0, -1),
+      past: [...state.past, capture(state)],
+      cues: next.cues,
+      selectedId: next.selectedId,
+      marks: next.marks,
+    });
+  },
+  updateCueText: (id, text, record = true) => {
+    if (record) get().recordHistory();
     set((state) => ({
       cues: state.cues.map((cue) => (cue.id === id ? { ...cue, text } : cue)),
-    })),
+    }));
+  },
   setCueTiming: (id, startMs, endMs) => {
     const duration = get().durationMs;
     const start = clamp(Math.min(startMs, endMs), 0, Math.max(0, duration - MIN_CUE_MS));
@@ -196,6 +273,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
   },
   addCueAt: (startMs, endMs) => {
+    get().recordHistory();
     const cue = createCue(startMs, endMs, "");
     set((state) => ({
       cues: sortCues([...state.cues, cue]),
@@ -203,14 +281,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }));
     return cue.id;
   },
-  removeCue: (id) =>
+  removeCue: (id) => {
+    get().recordHistory();
     set((state) => {
       const cues = state.cues.filter((cue) => cue.id !== id);
       return {
         cues,
         selectedId: state.selectedId === id ? (cues[0]?.id ?? null) : state.selectedId,
       };
-    }),
+    });
+  },
   splitSelected: (charIndex) => {
     const { cues, selectedId } = get();
     const index = cues.findIndex((cue) => cue.id === selectedId);
@@ -219,6 +299,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!cue) return;
     const parts = splitCue(cue, charIndex);
     if (!parts) return;
+    get().recordHistory();
     const next = [...cues];
     next.splice(index, 1, parts[0], parts[1]);
     set({ cues: sortCues(next), selectedId: parts[0].id });
@@ -235,6 +316,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!target) return false;
     const parts = splitCueAtTime(target, currentTimeMs);
     if (!parts) return false;
+    get().recordHistory();
     const index = cues.findIndex((cue) => cue.id === target.id);
     const next = [...cues];
     next.splice(index, 1, parts[0], parts[1]);
@@ -258,6 +340,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const left = cues[index - 1];
     const right = cues[index];
     if (!left || !right) return;
+    get().recordHistory();
     const merged = mergeCues(left, right);
     const next = [...cues];
     next.splice(index - 1, 2, merged);
@@ -266,10 +349,23 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   replaceAll: () => {
     const { cues, findText, replaceText } = get();
     const result = replaceInCues(cues, findText, replaceText);
+    if (result.count === 0) return 0;
+    get().recordHistory();
     set({ cues: result.cues });
-    if (replaceText.trim() && result.count > 0) {
-      get().addGlossary(replaceText.trim());
-    }
+    if (replaceText.trim()) get().addGlossary(replaceText.trim());
+    return result.count;
+  },
+  replaceInSelected: () => {
+    const { cues, selectedId, findText, replaceText } = get();
+    const current = cues.find((cue) => cue.id === selectedId);
+    if (!current) return 0;
+    const result = replaceInCue(current, findText, replaceText);
+    if (result.count === 0) return 0;
+    get().recordHistory();
+    set({
+      cues: cues.map((cue) => (cue.id === current.id ? result.cue : cue)),
+    });
+    if (replaceText.trim()) get().addGlossary(replaceText.trim());
     return result.count;
   },
   addGlossary: (term) => {
@@ -316,15 +412,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         fontSize: defaultStyle(orientation).fontSize,
       },
     })),
+  setLayoutMode: (layoutMode) => set({ layoutMode }),
   setShowSafeFrame: (showSafeFrame) => set({ showSafeFrame }),
   patchStyle: (patch) =>
     set((state) => ({ style: { ...state.style, ...patch } })),
   setPlaybackRate: (playbackRate) => set({ playbackRate }),
+  setVolume: (volume) => set({ volume: clamp(volume, 0, 1) }),
   setShowStyle: (showStyle) => set({ showStyle }),
   setShowShortcuts: (showShortcuts) => set({ showShortcuts }),
   importSrt: (raw) => {
     const cues = parseSrt(raw);
     if (cues.length === 0) return 0;
+    get().recordHistory();
     set({
       cues,
       selectedId: cues[0]?.id ?? null,
@@ -339,6 +438,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       cues: DEMO_CUES.map((cue) => ({ ...cue })),
       selectedId: DEMO_CUES[0]?.id ?? null,
       mediaUrl: null,
+      mediaFile: null,
       mediaName: DEMO_MEDIA_LABEL,
       durationMs: 17600,
       currentTimeMs: 0,
@@ -348,8 +448,62 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       peaks: syntheticPeaks(900),
       viewStartMs: 0,
       viewDurationMs: 17600,
+      past: [],
+      future: [],
       job: { phase: "ready", progress: 1, message: "示範稿，可練習波形與斷句" },
     });
+  },
+  loadProject: (project) => {
+    revoke(get().mediaUrl);
+    set({
+      projectId: project.id,
+      name: project.name,
+      cues: project.cues,
+      selectedId: project.cues[0]?.id ?? null,
+      currentTimeMs: project.cues[0]?.startMs ?? 0,
+      durationMs: project.durationMs,
+      mediaUrl: null,
+      mediaFile: null,
+      mediaName: project.mediaName,
+      marks: project.marks,
+      cutPoints: project.cutPoints,
+      peaks: syntheticPeaks(900),
+      playing: false,
+      orientation: project.orientation,
+      layoutMode: project.layoutMode,
+      language: project.language,
+      style: project.style,
+      ...fitView(project.durationMs),
+      past: [],
+      future: [],
+      job: {
+        phase: "ready",
+        progress: 1,
+        message: project.cues.length ? `共 ${project.cues.length} 句` : "",
+      },
+    });
+  },
+  snapshotProject: () => {
+    const state = get();
+    if (!state.projectId) return null;
+    const prev = getProject(state.projectId);
+    return {
+      id: state.projectId,
+      name: state.name,
+      cues: state.cues,
+      style: state.style,
+      orientation: state.orientation,
+      layoutMode: state.layoutMode,
+      language: state.language,
+      customWidth: prev?.customWidth ?? 1920,
+      customHeight: prev?.customHeight ?? 1080,
+      durationMs: state.durationMs,
+      marks: state.marks,
+      cutPoints: state.cutPoints,
+      mediaName: state.mediaName,
+      thumbnail: prev?.thumbnail ?? null,
+      updatedAt: Date.now(),
+    };
   },
   setFind: (findText) => set({ findText }),
   setReplace: (replaceText) => set({ replaceText }),
@@ -363,6 +517,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     return index >= 0 ? cues[index] ?? null : null;
   },
 }));
+
+function capture(state: { cues: Cue[]; selectedId: string | null; marks: number[] }): CueSnapshot {
+  return {
+    cues: state.cues,
+    selectedId: state.selectedId,
+    marks: state.marks,
+  };
+}
 
 function readGlossary(): string[] {
   if (typeof window === "undefined") return [];

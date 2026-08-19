@@ -22,7 +22,7 @@ export default async function Home({
           href="/studio"
           className="rounded-full bg-[var(--accent-2)] px-5 py-2.5 text-sm font-medium text-[#0a0a0a]"
         >
-          打開編輯器
+          打開工作室
         </Link>
         <a href="#steps" className="btn">
           現在做到哪
@@ -30,7 +30,7 @@ export default async function Home({
       </div>
       <ol id="steps" className="mt-16 space-y-3 text-sm leading-7 text-[var(--muted)]">
         <li>公開網址：示範稿、對時間、燒字幕都能用。訪客聽打每天有次數上限。</li>
-        <li>聽打金鑰放在伺服器，不進瀏覽器。長影片請先壓音訊，單次約 4MB。</li>
+        <li>聽打金鑰放在伺服器，不進瀏覽器。影片最長 40 分鐘，本機抽音後分段聽打。</li>
         <li>你自己用私密連結進入，聽打不限次數。</li>
         <li className="text-[var(--text)]">編輯器四階段已接上。登入額度還沒做。</li>
       </ol>
