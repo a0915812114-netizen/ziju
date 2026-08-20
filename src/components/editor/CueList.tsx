@@ -3,6 +3,7 @@
 import { charCount, charsPerSecond, cueAtTime, cueHasFind } from "@/lib/cues";
 import { TRANSLATE_TARGETS } from "@/lib/languages";
 import { formatListTime, formatPlayerTime } from "@/lib/time";
+import { transcribeCueWindow, TranscribeError } from "@/lib/transcribe-client";
 import type { SeekOpts } from "@/lib/types";
 import { useEditorStore } from "@/store/editor-store";
 import { useEffect, useRef, useState } from "react";
@@ -42,6 +43,8 @@ export function CueList({ onSeek }: Props) {
   const [tab, setTab] = useState<Tab>("cues");
   const [toLang, setToLang] = useState("en");
   const [translating, setTranslating] = useState(false);
+  const [retracing, setRetracing] = useState(false);
+  const setJob = useEditorStore((s) => s.setJob);
   const listRef = useRef<HTMLDivElement>(null);
   const srtRef = useRef<HTMLInputElement>(null);
   const editOrigin = useRef("");
@@ -100,6 +103,46 @@ export function CueList({ onSeek }: Props) {
     onSeek(startMs, { pause: true });
   }
 
+  async function retranscribeSelected() {
+    const cue = selected;
+    const file = useEditorStore.getState().mediaFile;
+    if (!cue) {
+      setToast("先點一句字幕");
+      return;
+    }
+    if (!file) {
+      setToast("請先接回影片，再重聽這句。");
+      return;
+    }
+    setRetracing(true);
+    setJob({ phase: "transcribing", progress: 0.35, message: "重聽這句…" });
+    try {
+      const next = await transcribeCueWindow({
+        file,
+        startMs: cue.startMs,
+        endMs: cue.endMs,
+        language: useEditorStore.getState().language,
+        glossary: useEditorStore.getState().glossary,
+        durationMs: useEditorStore.getState().durationMs,
+      });
+      recordHistory();
+      useEditorStore.setState({
+        cues: useEditorStore.getState().cues.map((item) =>
+          item.id === cue.id ? { ...item, text: next.text, words: next.words } : item,
+        ),
+        job: { phase: "ready", progress: 1, message: "" },
+        toast: "這句已重聽，可再手動改",
+      });
+    } catch (error) {
+      setJob({ phase: "ready", progress: 1, message: "" });
+      setToast(
+        error instanceof TranscribeError || error instanceof Error ? error.message : "重聽失敗",
+      );
+    } finally {
+      setRetracing(false);
+    }
+  }
+
   return (
     <section className="flex h-full min-h-0 flex-col bg-[var(--panel)]">
       <div className="flex items-center gap-5 border-b border-[var(--line)] px-4 pt-3 text-sm">
@@ -138,7 +181,7 @@ export function CueList({ onSeek }: Props) {
                   }
                 }}
                 placeholder="搜尋字幕"
-                className="field w-full rounded-full pl-8 pr-16"
+                className="field w-full rounded-full pl-9 pr-16"
               />
               <span className="absolute top-1/2 right-3 -translate-y-1/2 font-mono text-[11px] text-[var(--muted)]">
                 {needle ? (hits.length ? `${Math.max(1, hitIndex + 1)}/${hits.length}` : "0/0") : ""}
@@ -161,25 +204,9 @@ export function CueList({ onSeek }: Props) {
                 type="button"
                 className="btn shrink-0 px-2 py-1 text-xs"
                 disabled={!needle}
-                onClick={() => goHit(-1)}
-              >
-                上一個
-              </button>
-              <button
-                type="button"
-                className="btn shrink-0 px-2 py-1 text-xs"
-                disabled={!needle}
-                onClick={() => goHit(1)}
-              >
-                下一個
-              </button>
-              <button
-                type="button"
-                className="btn shrink-0 px-2 py-1 text-xs"
-                disabled={!needle}
                 onClick={() => runReplace("one")}
               >
-                這句
+                取代這句
               </button>
               <button
                 type="button"
@@ -187,8 +214,33 @@ export function CueList({ onSeek }: Props) {
                 disabled={!needle}
                 onClick={() => runReplace("all")}
               >
-                全部
+                全部取代
               </button>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="btn shrink-0 px-2 py-1 text-xs"
+                disabled={!needle}
+                onClick={() => goHit(-1)}
+              >
+                上一處
+              </button>
+              <button
+                type="button"
+                className="btn shrink-0 px-2 py-1 text-xs"
+                disabled={!needle}
+                onClick={() => goHit(1)}
+              >
+                下一處
+              </button>
+              <span className="text-[11px] text-[var(--muted)]">
+                {needle
+                  ? hits.length
+                    ? `找到 ${hits.length} 句`
+                    : "沒有符合的字幕"
+                  : "先搜尋，再取代"}
+              </span>
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <select
@@ -204,7 +256,7 @@ export function CueList({ onSeek }: Props) {
               </select>
               <button
                 type="button"
-                className="btn primary shrink-0 px-2 py-1 text-xs"
+                className="btn shrink-0 px-2 py-1 text-xs"
                 disabled={translating || cues.length === 0}
                 onClick={() => {
                   setTranslating(true);
@@ -294,6 +346,7 @@ export function CueList({ onSeek }: Props) {
                           onFocus={() => {
                             editOrigin.current = cue.text;
                             selectCue(cue.id);
+                            useEditorStore.getState().setPlaying(false);
                           }}
                           onChange={(event) => {
                             const next = event.currentTarget.value;
@@ -307,23 +360,21 @@ export function CueList({ onSeek }: Props) {
                             if (added) addGlossary(added);
                           }}
                           onKeyDown={(event) => {
-                            if (event.key === "Enter" && !event.shiftKey) {
+                            if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
                               event.preventDefault();
-                              if (event.ctrlKey || event.metaKey) {
-                                const indexAt =
-                                  event.currentTarget.selectionStart ??
-                                  event.currentTarget.value.length;
-                                updateCueText(cue.id, event.currentTarget.value, false);
-                                selectCue(cue.id);
-                                splitSelected(indexAt);
-                                return;
-                              }
-                              event.currentTarget.blur();
+                              const indexAt =
+                                event.currentTarget.selectionStart ??
+                                event.currentTarget.value.length;
+                              updateCueText(cue.id, event.currentTarget.value, false);
+                              selectCue(cue.id);
+                              splitSelected(indexAt);
+                              return;
                             }
                             if (
                               event.key === "Backspace" &&
                               (event.currentTarget.selectionStart ?? 0) === 0 &&
-                              (event.currentTarget.selectionEnd ?? 0) === 0
+                              (event.currentTarget.selectionEnd ?? 0) === 0 &&
+                              !event.currentTarget.value
                             ) {
                               event.preventDefault();
                               mergeWithPrevious(cue.id);
@@ -411,7 +462,7 @@ export function CueList({ onSeek }: Props) {
           <p>空白鍵 播放／暫停</p>
           <p>B 或「切過當前」在播放頭切斷　Delete 刪除這句</p>
           <p>Ctrl+Z 復原　Ctrl+Y 重做</p>
-          <p>Ctrl+Enter 斷句　行首 Backspace 合併　Alt 點字切斷</p>
+          <p>Ctrl+Enter 斷句　空句行首 Backspace 合併　Alt 點字切斷</p>
           <p>↑ ↓ 前句／後句並出聲　M 對齊點</p>
           <p>Ctrl+F 搜尋　Enter 下一處　Shift+Enter 上一處</p>
           <p>取代欄 Enter 改這句　Shift+Enter 全部取代</p>
@@ -421,11 +472,19 @@ export function CueList({ onSeek }: Props) {
         </div>
       ) : null}
       {selected && tab === "cues" ? (
-        <div className="flex flex-wrap gap-4 border-t border-[var(--line)] px-3 py-1.5 font-mono text-[11px] text-[var(--muted)]">
+        <div className="flex flex-wrap items-center gap-4 border-t border-[var(--line)] px-3 py-1.5 font-mono text-[11px] text-[var(--muted)]">
           <span>{formatPlayerTime(selected.startMs, true)}</span>
           <span>{((selected.endMs - selected.startMs) / 1000).toFixed(3)} 秒</span>
           <span>{charCount(selected.text)} 字</span>
           <span>{charsPerSecond(selected).toFixed(1)} 字／秒</span>
+          <button
+            type="button"
+            className="btn px-2 py-0.5 text-[11px]"
+            disabled={retracing}
+            onClick={() => void retranscribeSelected()}
+          >
+            {retracing ? "重聽中…" : "重聽這句"}
+          </button>
         </div>
       ) : null}
     </section>

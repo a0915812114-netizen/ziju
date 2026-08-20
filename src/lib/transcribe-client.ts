@@ -1,6 +1,6 @@
 "use client";
 
-import { extractAudio, splitAudioIfNeeded } from "./extract-audio";
+import { extractAudio, extractCueAudio, splitAudioIfNeeded } from "./extract-audio";
 import { sortCues, splitForReading } from "./cues";
 import { isChineseLang } from "./languages";
 import type { AsrLanguage } from "./style";
@@ -84,6 +84,45 @@ export async function transcribeMedia(
   return polished;
 }
 
+export async function transcribeCueWindow(opts: {
+  file: File;
+  startMs: number;
+  endMs: number;
+  language: AsrLanguage;
+  glossary: string[];
+  durationMs?: number;
+  signal?: AbortSignal;
+}) {
+  const signal = opts.signal ?? new AbortController().signal;
+  const chunk = await extractCueAudio(opts.file, opts.startMs, opts.endMs, opts.durationMs ?? 0);
+  const { cues } = await postChunk({
+    file: chunk.file,
+    language: opts.language,
+    glossary: opts.glossary,
+    prefix: "",
+    chunkIndex: 0,
+    ticket: "",
+    durationMs: chunk.durationMs,
+    signal,
+  });
+  const shifted = shiftCues(cues, chunk.offsetMs);
+  const joined = shifted.map((cue) => cue.text.trim()).filter(Boolean).join("");
+  if (!joined) {
+    throw new TranscribeError("EMPTY", "這句沒聽出字。");
+  }
+  const words = shifted.flatMap((cue) => cue.words);
+  const next: Cue = {
+    id: "cue-window",
+    startMs: opts.startMs,
+    endMs: opts.endMs,
+    text: joined,
+    words,
+  };
+  if (!isChineseLang(opts.language)) return next;
+  const [polished] = await polishCueTexts([next], opts.glossary, signal);
+  return polished ?? next;
+}
+
 async function postChunk(opts: {
   file: File;
   language: AsrLanguage;
@@ -100,7 +139,7 @@ async function postChunk(opts: {
   body.set("language", opts.language);
   body.set("chunkIndex", String(opts.chunkIndex));
   body.set("durationMs", String(Math.max(0, Math.round(opts.durationMs))));
-  if (opts.prefix) body.set("prefix", opts.prefix.slice(-400));
+  if (opts.prefix) body.set("prefix", opts.prefix.slice(-180));
   if (opts.ticket) body.set("ticket", opts.ticket);
   const response = await fetch("/api/transcribe", {
     method: "POST",

@@ -259,6 +259,7 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
                     onFocus={() => {
                       draftOrigin.current = shown.text;
                       selectCue(shown.id);
+                      mediaRef.current?.pause();
                     }}
                     onChange={(event) => {
                       const next = event.currentTarget.value;
@@ -268,7 +269,9 @@ export function PreviewPane({ mediaRef, onTime, onDuration }: Props) {
                       updateCueText(shown.id, next, false);
                     }}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey) event.currentTarget.blur();
+                      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                        event.currentTarget.blur();
+                      }
                     }}
                   />
                 )}

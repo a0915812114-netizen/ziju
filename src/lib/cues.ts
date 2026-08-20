@@ -152,29 +152,35 @@ export function replaceInCue(cue: Cue, find: string, replaceWith: string) {
 }
 
 function replaceInText(text: string, find: string, replaceWith: string) {
-  const needle = fold(find);
+  const needle = find.trim();
   if (!needle) return { text, count: 0 };
-  const source = fold(text);
-  let count = 0;
+  if (text.includes(needle)) {
+    const parts = text.split(needle);
+    return { text: parts.join(replaceWith), count: parts.length - 1 };
+  }
+  const foldedNeedle = fold(needle);
+  const chars = [...text];
+  const foldedChars = chars.map((ch) => fold(ch));
+  const width = [...foldedNeedle].length;
+  if (!width) return { text, count: 0 };
   let out = "";
-  let cursor = 0;
-  let from = 0;
-  while (from < text.length) {
-    const at = source.indexOf(needle, from);
-    if (at < 0) {
-      out += text.slice(cursor);
-      break;
+  let count = 0;
+  for (let i = 0; i < chars.length; ) {
+    const slice = foldedChars.slice(i, i + width).join("");
+    if (slice === foldedNeedle) {
+      out += replaceWith;
+      count += 1;
+      i += width;
+    } else {
+      out += chars[i] ?? "";
+      i += 1;
     }
-    out += text.slice(cursor, at) + replaceWith;
-    count += 1;
-    cursor = at + find.trim().length;
-    from = cursor;
   }
   return { text: out, count };
 }
 
 function fold(text: string) {
-  return text.toLocaleLowerCase("zh-Hant");
+  return text.toLocaleLowerCase("zh-Hant").split("剌").join("刺");
 }
 
 export function currentCueIndex(cues: Cue[], timeMs: number) {

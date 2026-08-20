@@ -488,6 +488,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   loadDemo: () => {
     revoke(get().mediaUrl);
     set({
+      projectId: null,
       name: DEMO_MEDIA_LABEL,
       cues: DEMO_CUES.map((cue) => ({ ...cue })),
       selectedId: DEMO_CUES[0]?.id ?? null,
@@ -505,6 +506,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       past: [],
       future: [],
       job: { phase: "ready", progress: 1, message: "示範稿，可練習波形與斷句" },
+      toast: "示範稿只在這次練習，不會存進目前專案。",
     });
   },
   loadProject: (project) => {
@@ -582,11 +584,20 @@ function capture(state: { cues: Cue[]; selectedId: string | null; marks: number[
 
 function readGlossary(): string[] {
   if (typeof window === "undefined") return [];
+  const seed = ["阿公", "阿嬤", "芭樂"];
   try {
     const raw = localStorage.getItem("ziju-glossary");
-    return raw ? (JSON.parse(raw) as string[]) : [];
+    const stored = raw ? (JSON.parse(raw) as string[]) : [];
+    const list = Array.isArray(stored) ? stored : [];
+    if (!localStorage.getItem("ziju-glossary-seed-v1")) {
+      const glossary = [...seed.filter((term) => !list.includes(term)), ...list];
+      writeGlossary(glossary);
+      localStorage.setItem("ziju-glossary-seed-v1", "1");
+      return glossary;
+    }
+    return list;
   } catch {
-    return [];
+    return seed;
   }
 }
 

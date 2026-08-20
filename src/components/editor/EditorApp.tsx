@@ -58,8 +58,15 @@ export function EditorApp({ projectId }: { projectId: string }) {
   }, [projectId, loadProject, router]);
 
   useEffect(() => {
+    return useEditorStore.subscribe((state, prev) => {
+      if (prev.playing && !state.playing) mediaRef.current?.pause();
+    });
+  }, []);
+
+  useEffect(() => {
     let timer = 0;
     const persist = () => {
+      if (useEditorStore.getState().projectId !== projectId) return;
       const snap = snapshotProject();
       if (snap && snap.id === projectId) saveProject(snap);
     };

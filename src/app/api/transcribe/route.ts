@@ -198,6 +198,9 @@ async function transcribe(opts: {
   });
   if (!response.ok) {
     const detail = await response.text();
+    if (/prompt length/i.test(detail) && opts.prompt) {
+      return transcribe({ ...opts, prompt: "" });
+    }
     if (/valid media file/i.test(detail)) {
       throw new Error("聲音抽好了但 Groq 還是讀不到。請再按一次開始製作。");
     }
@@ -214,11 +217,45 @@ function whisperPrompt(language: string, glossary: string[], prefix: string) {
         ? "自然な日本語の書き起こし。"
         : language === "ko"
           ? "자연스러운 한국어 전사."
-        : isChineseLang(language) || !language
-          ? "台灣繁體中文口語逐字稿。家庭稱呼用阿公、阿嬤。嗯、啊、好哦都保留。"
-          : "Natural spoken transcript.";
-  const terms = glossary.slice(0, 24).join("、");
-  return [head, terms, prefix].filter(Boolean).join(" ").slice(-900);
+          : isChineseLang(language) || !language
+            ? "台灣繁體口語。稱呼用阿公、阿嬤。水果寫芭樂。語氣詞保留。"
+            : "Natural spoken transcript.";
+  const terms = glossary.slice(0, 8).join("、");
+  const guide = [head, terms].filter(Boolean).join(" ");
+  const guideClipped = clipUtf8Start(guide, 360);
+  const room = Math.max(0, GROQ_PROMPT_BYTES - utf8Bytes(guideClipped) - 1);
+  const prev = clipUtf8End(prefix.replace(/\s+/g, " ").trim(), room);
+  return [guideClipped, prev].filter(Boolean).join(" ");
+}
+
+const GROQ_PROMPT_BYTES = 850;
+
+function utf8Bytes(text: string) {
+  return new TextEncoder().encode(text).length;
+}
+
+function clipUtf8End(text: string, maxBytes: number) {
+  if (maxBytes <= 0 || !text) return "";
+  if (utf8Bytes(text) <= maxBytes) return text;
+  let start = Math.max(0, text.length - Math.floor(maxBytes / 3) - 8);
+  let slice = text.slice(start);
+  while (slice.length && utf8Bytes(slice) > maxBytes) {
+    start += 1;
+    slice = text.slice(start);
+  }
+  return slice;
+}
+
+function clipUtf8Start(text: string, maxBytes: number) {
+  if (maxBytes <= 0 || !text) return "";
+  if (utf8Bytes(text) <= maxBytes) return text;
+  let end = Math.min(text.length, Math.floor(maxBytes / 3) + 8);
+  let slice = text.slice(0, end);
+  while (slice.length && utf8Bytes(slice) > maxBytes) {
+    end -= 1;
+    slice = text.slice(0, end);
+  }
+  return slice;
 }
 
 function prepareGroqAudio(bytes: Uint8Array, file: File) {

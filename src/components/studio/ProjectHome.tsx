@@ -86,7 +86,7 @@ export function ProjectHome() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="搜尋專案名稱"
-            className="field w-full rounded-full pl-8"
+            className="field w-full rounded-full pl-9"
           />
         </label>
         <button type="button" className="btn primary" onClick={newProject}>

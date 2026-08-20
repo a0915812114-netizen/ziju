@@ -31,6 +31,14 @@ const TAIWAN_TERMS: Array<[string, string]> = [
   ["阿忠", "阿公"],
   ["阿妈", "阿嬤"],
   ["阿媽", "阿嬤"],
+  ["阿摩", "阿嬤"],
+  ["巴樂", "芭樂"],
+  ["把樂", "芭樂"],
+  ["爸樂", "芭樂"],
+  ["拔刺", "芭樂"],
+  ["拔剌", "芭樂"],
+  ["布要", "不要"],
+  ["因該", "應該"],
 ];
 
 export function toTaiwanTraditional(text: string) {
