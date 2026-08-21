@@ -1,6 +1,6 @@
 "use client";
 
-import { MAX_MEDIA_MS } from "@/lib/extract-audio";
+import { inspectMediaFile, MAX_MEDIA_MS } from "@/lib/upload-policy";
 import { transcribeMedia, TranscribeError } from "@/lib/transcribe-client";
 import { readDuration } from "@/lib/media-duration";
 import { takePendingStyle } from "@/lib/heroes";
@@ -183,7 +183,16 @@ export function EditorApp({ projectId }: { projectId: string }) {
   }, [mediaUrl, setPeaks]);
 
   async function attachMedia(file: File) {
+    const allowed = await inspectMediaFile(file);
+    if (!allowed.ok) {
+      setToast(allowed.message);
+      return;
+    }
     const duration = await readDuration(file);
+    if (duration > MAX_MEDIA_MS) {
+      setToast("目前最長 40 分鐘。請先剪短再製作。");
+      return;
+    }
     setMedia(file, duration);
     setJob({ phase: "ready", progress: 1, message: "" });
     const first = useEditorStore.getState().cues[0];
@@ -197,6 +206,11 @@ export function EditorApp({ projectId }: { projectId: string }) {
   async function handleFile(file: File) {
     try {
       setJob({ phase: "extracting", progress: 0, message: "讀取檔案…" });
+      const allowed = await inspectMediaFile(file);
+      if (!allowed.ok) {
+        setJob({ phase: "error", progress: 0, message: allowed.message });
+        return;
+      }
       const duration = await readDuration(file);
       if (duration > MAX_MEDIA_MS) {
         setJob({ phase: "error", progress: 0, message: "目前最長 40 分鐘。請先剪短再製作。" });

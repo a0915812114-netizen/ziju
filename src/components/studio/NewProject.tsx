@@ -6,6 +6,7 @@ import { readDuration } from "@/lib/media-duration";
 import { createProject, saveProject } from "@/lib/projects";
 import type { AsrLanguage, LayoutMode } from "@/lib/style";
 import type { AsrStatus } from "@/lib/types";
+import { inspectMediaFile, MAX_MEDIA_MB, MEDIA_ACCEPT } from "@/lib/upload-policy";
 import { useEditorStore } from "@/store/editor-store";
 import { useMakeStore } from "@/store/make-store";
 import Link from "next/link";
@@ -60,8 +61,13 @@ export function NewProject() {
     return () => window.clearTimeout(timer);
   }, [toast, setToast]);
 
-  function pickFile(next: File | undefined) {
+  async function pickFile(next: File | undefined) {
     if (!next) return;
+    const allowed = await inspectMediaFile(next);
+    if (!allowed.ok) {
+      setToast(allowed.message);
+      return;
+    }
     setFile(next);
     readDuration(next).then((ms) => setMinutes(Math.max(1, Math.ceil(ms / 60_000))));
   }
@@ -213,15 +219,15 @@ export function NewProject() {
             </>
           )}
           <p className="mt-6 text-xs leading-6 text-[var(--muted)]">
-            影片、音檔都能選，最長 40 分鐘。片子留在你的電腦，只送出聲音做聽打。
+            影片、音檔都能選，最長 40 分鐘、單檔 ${MAX_MEDIA_MB}MB。片子留在你的電腦，只送出聲音做聽打。
             <br />
-            人聲乾淨、沒有配樂最準。人名、品牌先加詞庫，再按開始製作。
+            格式：mp4、mov、m4v、webm、m4a、mp3、wav、aac、ogg。人聲乾淨、沒有配樂最準。
           </p>
         </div>
         <input
           ref={fileRef}
           type="file"
-          accept="video/*,audio/*"
+          accept={MEDIA_ACCEPT}
           className="hidden"
           onChange={(event) => {
             pickFile(event.target.files?.[0]);

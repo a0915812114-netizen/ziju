@@ -1,7 +1,7 @@
 export const WAV_SAMPLE_RATE = 16000;
 
-export function wavDurationMs(byteLength: number) {
-  return Math.max(0, Math.round(((byteLength - 44) / (WAV_SAMPLE_RATE * 2)) * 1000));
+export function wavDurationMs(byteLength: number, sampleRate = WAV_SAMPLE_RATE) {
+  return Math.max(0, Math.round(((byteLength - 44) / (sampleRate * 2)) * 1000));
 }
 
 export function isRiffWave(bytes: Uint8Array) {

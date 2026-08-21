@@ -1,5 +1,6 @@
 "use client";
 
+import { inspectMediaFile, MAX_MEDIA_MS } from "./upload-policy";
 import { readDuration } from "./media-duration";
 import { setPendingUpload } from "./pending-upload";
 import { getProject, saveProject } from "./projects";
@@ -22,7 +23,12 @@ export async function makeSubtitles(
   if (signal.aborted) throw new DOMException("已取消", "AbortError");
 
   setStep("upload", 0.05);
+  const allowed = await inspectMediaFile(file);
+  if (!allowed.ok) throw new TranscribeError("BAD_FILE", allowed.message);
   const durationMs = await readDuration(file);
+  if (durationMs > MAX_MEDIA_MS) {
+    throw new TranscribeError("TOO_LONG", "目前最長 40 分鐘。請先剪短再製作。");
+  }
   const cues = await transcribeMedia({
     file,
     language,

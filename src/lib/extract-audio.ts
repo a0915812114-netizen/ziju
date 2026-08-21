@@ -2,10 +2,11 @@
 
 import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { fetchFile, toBlobURL } from "@ffmpeg/util";
+import { ffmpegInputName, inspectMediaFile, MAX_MEDIA_MS, randomWavName } from "./upload-policy";
 import { encodeFloatWav, encodePcmWav, isRiffWave, WAV_SAMPLE_RATE, wavDurationMs } from "./wav";
 
+export { MAX_MEDIA_MS };
 export const SAFE_UPLOAD_BYTES = 3.2 * 1024 * 1024;
-export const MAX_MEDIA_MS = 40 * 60 * 1000 + 20_000;
 const SAMPLE_RATE = WAV_SAMPLE_RATE;
 const BYTES_PER_SEC = SAMPLE_RATE * 2;
 const WAV_CHUNK_PCM = Math.floor((SAFE_UPLOAD_BYTES - 64) / 2) * 2;
@@ -30,20 +31,28 @@ export async function extractAudio(
   if (durationMs > MAX_MEDIA_MS) {
     throw new Error("目前最長 40 分鐘。請先剪短再製作。");
   }
+  const allowed = await inspectMediaFile(file);
+  if (!allowed.ok) throw new Error(allowed.message);
 
   const shortEnoughToDecode = durationMs === 0 || durationMs <= DECODE_MS;
   if (shortEnoughToDecode) {
     onProgress(0.08, "正在用瀏覽器抽出聲音…");
     const decoded = await tryDecodeToWav(file);
     if (decoded && decoded.blob.size > 1000 && audioCoversVideo(decoded.durationMs, durationMs)) {
+      if (decoded.durationMs > MAX_MEDIA_MS) {
+        throw new Error("目前最長 40 分鐘。請先剪短再製作。");
+      }
       onProgress(1, "音訊已就緒");
-      return wavFile(decoded.blob, file.name);
+      return wavFile(decoded.blob);
     }
   }
 
   onProgress(0.1, durationMs > 600_000 ? "長片抽音中，請稍候…" : "載入抽音引擎（第一次會較久）…");
   const fromFfmpeg = await extractWavWithFfmpeg(file, onProgress);
   if (fromFfmpeg) {
+    if (wavDurationMs(fromFfmpeg.size) > MAX_MEDIA_MS) {
+      throw new Error("目前最長 40 分鐘。請先剪短再製作。");
+    }
     onProgress(1, "音訊已就緒");
     return fromFfmpeg;
   }
@@ -51,8 +60,11 @@ export async function extractAudio(
   onProgress(0.7, "改用瀏覽器再抽一次聲音…");
   const fallback = await tryDecodeToWav(file);
   if (fallback && fallback.blob.size > 1000 && audioCoversVideo(fallback.durationMs, durationMs)) {
+    if (fallback.durationMs > MAX_MEDIA_MS) {
+      throw new Error("目前最長 40 分鐘。請先剪短再製作。");
+    }
     onProgress(1, "音訊已就緒");
-    return wavFile(fallback.blob, file.name);
+    return wavFile(fallback.blob);
   }
   throw new Error("抽不出聲音。請改存成 mp4 或 m4a 再試。");
 }
@@ -67,7 +79,7 @@ export async function splitAudioIfNeeded(
     const pcm = Math.max(0, bytes.length - 44);
     if (pcm > WAV_CHUNK_PCM || file.size > SAFE_UPLOAD_BYTES) {
       onProgress(0.2, "正在切成短段聽打…");
-      const chunks = splitWavBytes(bytes, file.name);
+      const chunks = splitWavBytes(bytes);
       onProgress(1, `分成 ${chunks.length} 段聽打`);
       return chunks;
     }
@@ -79,10 +91,7 @@ export async function splitAudioIfNeeded(
       },
     ];
   }
-  if (file.size <= SAFE_UPLOAD_BYTES && file.size > 200) {
-    return [{ file: ensureNamedAudio(file), offsetMs: 0, durationMs: _durationMs }];
-  }
-  throw new Error("音訊仍太大。請先剪短再製作。");
+  throw new Error("音訊仍太大，或不是 WAV。請從工作室重新開始製作。");
 }
 
 export async function extractCueAudio(
@@ -91,6 +100,8 @@ export async function extractCueAudio(
   endMs: number,
   durationMs = 0,
 ) {
+  const allowed = await inspectMediaFile(file);
+  if (!allowed.ok) throw new Error(allowed.message);
   const padMs = 400;
   const fromMs = Math.max(0, startMs - padMs);
   const toMs = Math.max(fromMs + 250, endMs + padMs);
@@ -110,7 +121,7 @@ export async function extractCueAudio(
         const sliced = sliceWav(bytes, fromMs, toMs);
         if (sliced) {
           return {
-            file: new File([toArrayBuffer(sliced)], "cue.wav", { type: "audio/wav" }),
+            file: new File([toArrayBuffer(sliced)], randomWavName(), { type: "audio/wav" }),
             offsetMs: fromMs,
             durationMs: wavDurationMs(sliced.length),
           };
@@ -136,7 +147,7 @@ function sliceWav(bytes: Uint8Array, startMs: number, endMs: number) {
 
 async function extractWavRangeWithFfmpeg(file: File, startMs: number, durationMs: number) {
   const ffmpeg = await getFfmpeg(() => undefined);
-  const inputName = `input${extension(file.name)}`;
+  const inputName = ffmpegInputName(file.name);
   const outputName = "cue.wav";
   await ffmpeg.writeFile(inputName, await fetchFile(file));
   try {
@@ -165,7 +176,7 @@ async function extractWavRangeWithFfmpeg(file: File, startMs: number, durationMs
     const bytes = data instanceof Uint8Array ? new Uint8Array(data) : null;
     if (!bytes || !isWav(bytes) || bytes.length < 1000) return null;
     return {
-      file: new File([toArrayBuffer(bytes)], "cue.wav", { type: "audio/wav" }),
+      file: new File([toArrayBuffer(bytes)], randomWavName(), { type: "audio/wav" }),
       offsetMs: startMs,
       durationMs: wavDurationMs(bytes.length),
     };
@@ -178,13 +189,15 @@ async function extractWavRangeWithFfmpeg(file: File, startMs: number, durationMs
   }
 }
 
-function wavFile(blob: Blob, name: string) {
-  return new File([blob], `${baseName(name)}.wav`, { type: "audio/wav" });
+function wavFile(blob: Blob) {
+  return new File([blob], randomWavName(), { type: "audio/wav" });
 }
 
 function ensureNamedAudio(file: File) {
   if (file.type === "audio/wav" || file.name.toLowerCase().endsWith(".wav")) {
-    return file.type === "audio/wav" ? file : wavFile(file, file.name);
+    return file.type === "audio/wav"
+      ? new File([file], randomWavName(), { type: "audio/wav" })
+      : wavFile(file);
   }
   return file;
 }
@@ -193,19 +206,18 @@ function isWav(bytes: Uint8Array) {
   return isRiffWave(bytes);
 }
 
-function splitWavBytes(bytes: Uint8Array, name: string): AudioChunk[] {
+function splitWavBytes(bytes: Uint8Array): AudioChunk[] {
   const pcm = bytes.subarray(44);
   const chunks: AudioChunk[] = [];
   const windowBytes = WAV_CHUNK_PCM;
   const overlap = ASR_OVERLAP_PCM;
   let offset = 0;
-  let index = 0;
   while (offset < pcm.length) {
     const end = Math.min(pcm.length, offset + windowBytes);
     const slice = pcm.subarray(offset, end);
     const wav = encodePcmWav(slice);
     chunks.push({
-      file: new File([toArrayBuffer(wav)], `${baseName(name)}-${index + 1}.wav`, {
+      file: new File([toArrayBuffer(wav)], randomWavName(), {
         type: "audio/wav",
       }),
       offsetMs: Math.round((offset / BYTES_PER_SEC) * 1000),
@@ -213,13 +225,12 @@ function splitWavBytes(bytes: Uint8Array, name: string): AudioChunk[] {
     });
     if (end >= pcm.length) break;
     offset = Math.max(offset + windowBytes - overlap, offset + 2);
-    index += 1;
   }
   return chunks.length
     ? chunks
     : [
         {
-          file: wavFile(new Blob([toArrayBuffer(bytes)], { type: "audio/wav" }), name),
+          file: wavFile(new Blob([toArrayBuffer(bytes)], { type: "audio/wav" })),
           offsetMs: 0,
           durationMs: wavDurationMs(bytes.length),
         },
@@ -235,7 +246,7 @@ async function extractWavWithFfmpeg(file: File, onProgress: ProgressFn) {
   const ffmpeg = await getFfmpeg((ratio) => {
     onProgress(0.12 + ratio * 0.78, "正在抽出聲音…");
   });
-  const inputName = `input${extension(file.name)}`;
+  const inputName = ffmpegInputName(file.name);
   const outputName = "audio.wav";
   await ffmpeg.writeFile(inputName, await fetchFile(file));
   try {
@@ -259,7 +270,7 @@ async function extractWavWithFfmpeg(file: File, onProgress: ProgressFn) {
     await ffmpeg.deleteFile(outputName);
     const bytes = data instanceof Uint8Array ? new Uint8Array(data) : null;
     if (!bytes || !isWav(bytes) || bytes.length < 1000) return null;
-    return new File([toArrayBuffer(bytes)], `${baseName(file.name)}.wav`, {
+    return new File([toArrayBuffer(bytes)], randomWavName(), {
       type: "audio/wav",
     });
   } finally {
@@ -325,11 +336,3 @@ function toArrayBuffer(bytes: Uint8Array) {
   return buffer;
 }
 
-function extension(name: string) {
-  const idx = name.lastIndexOf(".");
-  return idx >= 0 ? name.slice(idx) : ".mp4";
-}
-
-function baseName(name: string) {
-  return name.replace(/\.[^.]+$/, "") || "audio";
-}

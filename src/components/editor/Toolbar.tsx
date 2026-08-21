@@ -4,6 +4,7 @@ import { PUBLIC_DAILY } from "@/lib/access";
 import { toVtt } from "@/lib/cues";
 import { downloadBlob, downloadText, exportBurnedVideo, type BurnMode } from "@/lib/export-video";
 import type { AsrStatus } from "@/lib/types";
+import { MEDIA_ACCEPT } from "@/lib/upload-policy";
 import { useEditorStore } from "@/store/editor-store";
 import Link from "next/link";
 import { type RefObject, useEffect, useRef, useState } from "react";
@@ -228,7 +229,7 @@ export function Toolbar({ onPickFile, mediaRef }: Props) {
         <input
           ref={fileRef}
           type="file"
-          accept="video/*,audio/*"
+          accept={MEDIA_ACCEPT}
           className="hidden"
           onChange={(event) => {
             const file = event.target.files?.[0];

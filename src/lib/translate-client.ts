@@ -8,9 +8,12 @@ export async function translateLines(lines: string[], to: string) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ to, lines: slice }),
     });
-    const payload = (await response.json()) as { lines?: unknown; error?: string };
+    const payload = (await response.json()) as { lines?: unknown; error?: string; message?: string };
+    if (response.status === 429) {
+      throw new Error(payload.message || "今天的翻譯次數用完了。");
+    }
     if (!response.ok || !Array.isArray(payload.lines) || payload.lines.length !== slice.length) {
-      throw new Error("翻譯失敗");
+      throw new Error(payload.message || "翻譯失敗");
     }
     out.push(...payload.lines.map((line) => String(line ?? "").trim()));
   }

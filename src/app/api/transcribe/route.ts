@@ -1,17 +1,26 @@
 import {
   clientIp,
-  consumePublicQuota,
   isOwnerRequest,
   MAX_TRANSCRIBE_BYTES,
-  publicQuota,
 } from "@/lib/access";
 import { isChineseLang, whisperLanguage } from "@/lib/languages";
 import { cleanCueText } from "@/lib/clean-cue";
 import { newId, splitForReading } from "@/lib/cues";
+import { PUBLIC_FAIL, publicFailMessage } from "@/lib/public-error";
+import {
+  addTranscribeJobMs,
+  consumeQuota,
+  isSecureRequest,
+  jsonWithCookie,
+  newTranscribeJobId,
+  publicQuota,
+  quotaCookie,
+} from "@/lib/quota";
 import { secondsToMs } from "@/lib/time";
 import { issueTranscribeTicket, verifyTranscribeTicket } from "@/lib/transcribe-ticket";
 import type { Cue, Word } from "@/lib/types";
-import { isRiffWave, repairPcmWav } from "@/lib/wav";
+import { inspectWavUpload, MAX_MEDIA_MS } from "@/lib/upload-policy";
+import { repairPcmWav } from "@/lib/wav";
 
 export const maxDuration = 60;
 
@@ -39,13 +48,19 @@ export async function GET(request: Request) {
   const groq = Boolean(process.env.GROQ_API_KEY?.trim());
   const openai = Boolean(process.env.OPENAI_API_KEY?.trim());
   const owner = isOwnerRequest(request.headers.get("cookie"));
-  const quota = owner ? null : publicQuota(clientIp(request));
-  return Response.json({
-    configured: groq || openai,
-    provider: groq ? "groq" : openai ? "openai" : null,
-    owner,
-    remaining: quota ? quota.remaining : null,
-  });
+  const quota = owner ? null : publicQuota(clientIp(request), request.headers.get("cookie"));
+  return jsonWithCookie(
+    {
+      configured: groq || openai,
+      provider: groq ? "groq" : openai ? "openai" : null,
+      owner,
+      remaining: quota ? quota.remaining : null,
+    },
+    200,
+    quota && (quota.state.transcribe > 0 || quota.state.chat > 0)
+      ? quotaCookie(quota.state, isSecureRequest(request))
+      : null,
+  );
 }
 
 export async function POST(request: Request) {
@@ -55,13 +70,15 @@ export async function POST(request: Request) {
     return Response.json(
       {
         error: "NO_KEY",
-        message: "尚未設定 GROQ_API_KEY 或 OPENAI_API_KEY，可先載入示範稿。",
+        message: "聽打還沒開好，可先載入示範稿。",
       },
       { status: 401 },
     );
   }
 
   const owner = isOwnerRequest(request.headers.get("cookie"));
+  const secure = isSecureRequest(request);
+  const cookies = request.headers.get("cookie");
 
   const form = await request.formData();
   const audio = form.get("audio");
@@ -69,59 +86,96 @@ export async function POST(request: Request) {
   const languageRaw = String(form.get("language") ?? "auto");
   const language = whisperLanguage(languageRaw);
   const chinese = isChineseLang(languageRaw);
-  const durationMs = Math.max(0, Number(form.get("durationMs") ?? 0));
+  const claimedMs = Math.max(0, Number(form.get("durationMs") ?? 0));
   if (!(audio instanceof File)) {
-    return Response.json({ error: "請上傳音訊" }, { status: 400 });
+    return Response.json({ error: "請上傳音訊", message: "請上傳音訊" }, { status: 400 });
   }
-  if (audio.size > MAX_TRANSCRIBE_BYTES) {
+  if (claimedMs > MAX_MEDIA_MS) {
     return Response.json(
-      {
-        error: "TOO_LARGE",
-        message: "這一段音訊超過上限。長片會自動分段，若仍失敗請先轉成較小的 mp4。",
-      },
-      { status: 413 },
+      { error: "TOO_LONG", message: "目前最長 40 分鐘。請先剪短再製作。" },
+      { status: 400 },
     );
   }
+
+  const bytes = new Uint8Array(await audio.arrayBuffer());
+  const wav = inspectWavUpload(bytes, audio.size, MAX_TRANSCRIBE_BYTES);
+  if (!wav.ok) {
+    return Response.json({ error: "BAD_AUDIO", message: wav.message }, { status: 400 });
+  }
+  const durationMs = Math.min(wav.durationMs, claimedMs || wav.durationMs);
 
   const ip = clientIp(request);
   const chunkIndex = Number(form.get("chunkIndex") ?? 0);
   const ticket = String(form.get("ticket") ?? "");
-  if (!owner) {
-    if (chunkIndex > 0) {
-      if (!verifyTranscribeTicket(ticket, ip)) {
-        return Response.json(
-          { error: "RATE_LIMITED", message: "分段聽打逾時，請再按一次開始製作。" },
-          { status: 429 },
-        );
-      }
-    } else {
-      const quota = consumePublicQuota(ip);
+  let quotaCookieValue: string | null = null;
+  let jobId = "";
+  let usedMs = 0;
+  const jobExp = Date.now() + 25 * 60 * 1000;
+
+  if (chunkIndex > 0) {
+    const parsed = verifyTranscribeTicket(ticket, ip);
+    if (!parsed) {
+      return Response.json(
+        { error: "RATE_LIMITED", message: "分段聽打逾時，請再按一次開始製作。" },
+        { status: 429 },
+      );
+    }
+    jobId = parsed.jobId;
+    const nextUsed = addTranscribeJobMs(jobId, wav.durationMs, parsed.exp, parsed.usedMs);
+    if (nextUsed === null) {
+      return Response.json(
+        { error: "TOO_LONG", message: "目前最長 40 分鐘。請先剪短再製作。" },
+        { status: 400 },
+      );
+    }
+    usedMs = nextUsed;
+  } else {
+    if (!owner) {
+      const quota = consumeQuota("transcribe", ip, cookies, secure);
+      quotaCookieValue = quota.cookie;
       if (!quota.ok) {
-        return Response.json(
+        return jsonWithCookie(
           {
             error: "RATE_LIMITED",
             message: "公開聽打次數用完了。編輯、對時間、燒字幕仍可用。",
           },
-          { status: 429 },
+          429,
+          quotaCookieValue,
         );
       }
     }
+    jobId = newTranscribeJobId();
+    const nextUsed = addTranscribeJobMs(jobId, wav.durationMs, jobExp, 0);
+    if (nextUsed === null) {
+      return jsonWithCookie(
+        { error: "TOO_LONG", message: "目前最長 40 分鐘。請先剪短再製作。" },
+        400,
+        quotaCookieValue,
+      );
+    }
+    usedMs = nextUsed;
   }
 
   const prefix = String(form.get("prefix") ?? "").trim();
   const glossary = glossaryRaw
     .split("\n")
-    .map((item) => item.trim())
-    .filter(Boolean);
+    .map((item) => item.trim().slice(0, 40))
+    .filter(Boolean)
+    .slice(0, 40);
   const prompt = whisperPrompt(languageRaw, glossary, prefix);
 
   try {
+    const prepared = {
+      bytes: repairPcmWav(bytes),
+      filename: "audio.wav",
+      type: "audio/wav",
+    };
     const transcribed = groqKey
       ? await transcribe({
           url: "https://api.groq.com/openai/v1/audio/transcriptions",
           key: groqKey,
           model: "whisper-large-v3",
-          file: audio,
+          prepared,
           prompt,
           language,
         })
@@ -129,19 +183,20 @@ export async function POST(request: Request) {
           url: "https://api.openai.com/v1/audio/transcriptions",
           key: openaiKey as string,
           model: "whisper-1",
-          file: audio,
+          prepared,
           prompt,
           language,
         });
 
     const rawCues = cuesFromTranscript(transcribed, durationMs);
     if (rawCues.length === 0) {
-      return Response.json(
+      return jsonWithCookie(
         {
           error: "EMPTY",
           message: "沒聽出字幕。請確認片子有人聲，語言改成繁體中文再試一次。",
         },
-        { status: 422 },
+        422,
+        quotaCookieValue,
       );
     }
 
@@ -156,14 +211,21 @@ export async function POST(request: Request) {
       }))
       .filter((cue) => cue.text);
 
-    return Response.json({
-      cues,
-      provider: groqKey ? "groq" : "openai",
-      ticket: owner ? "" : issueTranscribeTicket(ip),
-    });
+    return jsonWithCookie(
+      {
+        cues,
+        provider: groqKey ? "groq" : "openai",
+        ticket: issueTranscribeTicket(ip, jobId, usedMs),
+      },
+      200,
+      quotaCookieValue,
+    );
   } catch (error) {
-    const message = error instanceof Error ? error.message : "聽打失敗";
-    return Response.json({ error: "ASR_FAILED", message }, { status: 500 });
+    return jsonWithCookie(
+      { error: "ASR_FAILED", message: publicFailMessage(error) },
+      500,
+      quotaCookieValue,
+    );
   }
 }
 
@@ -171,15 +233,16 @@ async function transcribe(opts: {
   url: string;
   key: string;
   model: string;
-  file: File;
+  prepared: { bytes: Uint8Array; filename: string; type: string };
   prompt: string;
   language: string;
 }): Promise<WhisperResponse> {
   const body = new FormData();
-  const prepared = prepareGroqAudio(new Uint8Array(await opts.file.arrayBuffer()), opts.file);
   body.set(
     "file",
-    new File([Buffer.from(prepared.bytes)], prepared.filename, { type: prepared.type }),
+    new File([Buffer.from(opts.prepared.bytes)], opts.prepared.filename, {
+      type: opts.prepared.type,
+    }),
   );
   body.set("model", opts.model);
   body.set("response_format", "verbose_json");
@@ -202,9 +265,9 @@ async function transcribe(opts: {
       return transcribe({ ...opts, prompt: "" });
     }
     if (/valid media file/i.test(detail)) {
-      throw new Error("聲音抽好了但 Groq 還是讀不到。請再按一次開始製作。");
+      throw new Error("聲音抽好了但還是讀不到。請再按一次開始製作。");
     }
-    throw new Error(`聽打失敗：${response.status} ${detail.slice(0, 180)}`);
+    throw new Error(PUBLIC_FAIL);
   }
   return (await response.json()) as WhisperResponse;
 }
@@ -256,23 +319,6 @@ function clipUtf8Start(text: string, maxBytes: number) {
     slice = text.slice(0, end);
   }
   return slice;
-}
-
-function prepareGroqAudio(bytes: Uint8Array, file: File) {
-  if (isRiffWave(bytes) || file.type.includes("wav") || file.name.toLowerCase().endsWith(".wav")) {
-    return {
-      bytes: repairPcmWav(bytes),
-      filename: "audio.wav",
-      type: "audio/wav",
-    };
-  }
-  const name = file.name.toLowerCase();
-  const filename = name.replace(/[^a-z0-9.]+/g, "") || "audio.mp3";
-  return {
-    bytes,
-    filename: filename.endsWith(".mp3") ? "audio.mp3" : filename,
-    type: file.type || "audio/mpeg",
-  };
 }
 
 function cuesFromTranscript(payload: WhisperResponse, durationMs: number): Cue[] {
