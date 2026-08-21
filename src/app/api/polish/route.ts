@@ -29,7 +29,7 @@ export async function POST(request: Request) {
   const secure = isSecureRequest(request);
   let quotaCookieValue: string | null = null;
   if (!owner) {
-    const quota = consumeQuota("chat", clientIp(request), request.headers.get("cookie"), secure);
+    const quota = await consumeQuota("chat", clientIp(request), request.headers.get("cookie"), secure);
     quotaCookieValue = quota.cookie;
     if (!quota.ok) {
       return jsonWithCookie(

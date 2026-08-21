@@ -15,6 +15,7 @@ import {
   newTranscribeJobId,
   publicQuota,
   quotaCookie,
+  unitsForAudioMs,
 } from "@/lib/quota";
 import { secondsToMs } from "@/lib/time";
 import { issueTranscribeTicket, verifyTranscribeTicket } from "@/lib/transcribe-ticket";
@@ -48,7 +49,7 @@ export async function GET(request: Request) {
   const groq = Boolean(process.env.GROQ_API_KEY?.trim());
   const openai = Boolean(process.env.OPENAI_API_KEY?.trim());
   const owner = isOwnerRequest(request.headers.get("cookie"));
-  const quota = owner ? null : publicQuota(clientIp(request), request.headers.get("cookie"));
+  const quota = owner ? null : await publicQuota(clientIp(request), request.headers.get("cookie"));
   return jsonWithCookie(
     {
       configured: groq || openai,
@@ -110,6 +111,7 @@ export async function POST(request: Request) {
   let quotaCookieValue: string | null = null;
   let jobId = "";
   let usedMs = 0;
+  let billedUnits = 1;
   const jobExp = Date.now() + 25 * 60 * 1000;
 
   if (chunkIndex > 0) {
@@ -121,7 +123,8 @@ export async function POST(request: Request) {
       );
     }
     jobId = parsed.jobId;
-    const nextUsed = addTranscribeJobMs(jobId, wav.durationMs, parsed.exp, parsed.usedMs);
+    billedUnits = parsed.billedUnits;
+    const nextUsed = await addTranscribeJobMs(jobId, wav.durationMs, parsed.exp, parsed.usedMs);
     if (nextUsed === null) {
       return Response.json(
         { error: "TOO_LONG", message: "目前最長 40 分鐘。請先剪短再製作。" },
@@ -131,7 +134,7 @@ export async function POST(request: Request) {
     usedMs = nextUsed;
   } else {
     if (!owner) {
-      const quota = consumeQuota("transcribe", ip, cookies, secure);
+      const quota = await consumeQuota("transcribe", ip, cookies, secure);
       quotaCookieValue = quota.cookie;
       if (!quota.ok) {
         return jsonWithCookie(
@@ -145,7 +148,8 @@ export async function POST(request: Request) {
       }
     }
     jobId = newTranscribeJobId();
-    const nextUsed = addTranscribeJobMs(jobId, wav.durationMs, jobExp, 0);
+    billedUnits = 1;
+    const nextUsed = await addTranscribeJobMs(jobId, wav.durationMs, jobExp, 0);
     if (nextUsed === null) {
       return jsonWithCookie(
         { error: "TOO_LONG", message: "目前最長 40 分鐘。請先剪短再製作。" },
@@ -154,6 +158,26 @@ export async function POST(request: Request) {
       );
     }
     usedMs = nextUsed;
+  }
+
+  if (!owner) {
+    const needed = unitsForAudioMs(usedMs);
+    const extra = needed - billedUnits;
+    if (extra > 0) {
+      const more = await consumeQuota("transcribe", ip, cookies, secure, extra);
+      quotaCookieValue = more.cookie;
+      if (!more.ok) {
+        return jsonWithCookie(
+          {
+            error: "RATE_LIMITED",
+            message: "這支片子較長，公開聽打次數不夠了。請剪短或明天再試。",
+          },
+          429,
+          quotaCookieValue,
+        );
+      }
+      billedUnits = needed;
+    }
   }
 
   const prefix = String(form.get("prefix") ?? "").trim();
@@ -215,7 +239,7 @@ export async function POST(request: Request) {
       {
         cues,
         provider: groqKey ? "groq" : "openai",
-        ticket: issueTranscribeTicket(ip, jobId, usedMs),
+        ticket: issueTranscribeTicket(ip, jobId, usedMs, billedUnits),
       },
       200,
       quotaCookieValue,

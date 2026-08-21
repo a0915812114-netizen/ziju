@@ -57,21 +57,23 @@ npm run dev
 
 公開站建議放 Vercel。聽打金鑰用環境變數，不要寫進程式。
 
-- `GROQ_API_KEY` 或 `OPENAI_API_KEY`：公開聽打每天每 IP 5 次；對稿／翻譯每天 20 次
-- `OWNER_TOKEN`：打開 `/go/你的token` 進入主人模式，聽打不限次數
+- `GROQ_API_KEY` 或 `OPENAI_API_KEY`：公開聽打每天每 IP 5 次；對稿／翻譯每天 20 次。長片每 10 分鐘再扣 1 次聽打
+- `OWNER_TOKEN`：打開 `/unlock` 輸入密語進入主人模式
 - `QUOTA_SECRET`：可選，簽額度 cookie
+- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`：正式站額度跨機器共用
 
 ```bash
 npx vercel --prod --scope wen-sung
 ```
 
-## 資安（上線前自己勾）
+## 資安
 
-程式擋得了上傳與額度，擋不了帳號被拿走。
+完整註記與優先程度見 [SECURITY.md](./SECURITY.md)。
 
-1. GitHub、Vercel、Groq 開兩步驟驗證
-2. Groq／Vercel 設預算上限與警報
-3. GitHub repo → Settings → Code security → 打開 Secret scanning、Push protection、Dependabot
-4. 金鑰只要進過 git 或聊天，到 Groq 作廢舊鑰、換新鑰、改 Vercel 環境變數
-5. 主人連結不要貼公開處
+上線前自己勾：
+
+1. GitHub、Vercel 開兩步驟驗證（Groq 免費方案沒有月費上限，不必升企業版）
+2. GitHub repo → Settings → Code security → Secret scanning、Push protection、Dependabot（公開 repo 已開）
+3. 金鑰進過 git 或聊天就要作廢重產
+4. 主人連結不要貼公開處
 

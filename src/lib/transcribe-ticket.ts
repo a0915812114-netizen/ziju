@@ -10,9 +10,16 @@ function secret() {
   );
 }
 
-export function issueTranscribeTicket(ip: string, jobId: string, usedMs: number) {
+export function issueTranscribeTicket(
+  ip: string,
+  jobId: string,
+  usedMs: number,
+  billedUnits: number,
+) {
   const exp = Date.now() + 25 * 60 * 1000;
-  const payload = Buffer.from(JSON.stringify({ ip, exp, jobId, usedMs })).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({ ip, exp, jobId, usedMs, billedUnits }),
+  ).toString("base64url");
   const sig = createHmac("sha256", secret()).update(payload).digest("base64url");
   return `${payload}.${sig}`;
 }
@@ -33,11 +40,13 @@ export function verifyTranscribeTicket(ticket: string, ip: string) {
       exp: number;
       jobId?: string;
       usedMs?: number;
+      billedUnits?: number;
     };
     if (data.ip !== ip || data.exp <= Date.now() || !data.jobId) return null;
     return {
       jobId: data.jobId,
       usedMs: Math.max(0, Number(data.usedMs) || 0),
+      billedUnits: Math.max(1, Math.floor(Number(data.billedUnits) || 1)),
       exp: data.exp,
     };
   } catch {
